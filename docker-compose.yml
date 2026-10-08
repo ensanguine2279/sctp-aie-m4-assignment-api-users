@@ -1,0 +1,61 @@
+services:
+  # ----------------------------------------------------
+  # 1. Dedicated PostgreSQL Database for User Service
+  # ----------------------------------------------------
+  user-db:
+    image: postgres:16-alpine
+    container_name: user-db
+    environment:
+      POSTGRES_DB: ${DB_NAME_ENV}
+      POSTGRES_USER: ${DB_USER_ENV}
+      POSTGRES_PASSWORD: ${DB_PASSWORD_ENV}
+    ports:
+      - "5432:5432" # Host:Container port mapping
+    volumes:
+      - user_db_data:/var/lib/postgresql/data # Persistent storage
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER_ENV} -d ${DB_NAME_ENV}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - users-network
+
+  # ----------------------------------------------------
+  # 2. User Microservice Application
+  # ----------------------------------------------------
+  user-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: ensanguine/user-service:1.0.0
+    container_name: user-service
+    ports:
+      - "8080:8080"
+    environment:
+      - APP_PORT=${APP_PORT_ENV}
+      - DB_HOST=user-db
+      - DB_PORT=${DB_PORT_ENV}
+      - DB_NAME=${DB_NAME_ENV}
+      - DB_USER=${DB_USER_ENV}
+      - DB_PASSWORD=${DB_PASSWORD_ENV}
+      - JWT_SECRET=${JWT_SECRET_ENV}
+      - JWT_EXPIRATION_MS=${JWT_EXPIRATION_MS_ENV}
+      - ADMIN_USERNAME=${ADMIN_USERNAME_ENV}
+      - ADMIN_PASSWORD=${ADMIN_PASSWORD_ENV}
+    depends_on:
+      user-db:
+        condition: service_healthy # Waits for DB healthcheck to pass before booting Spring Boot
+    networks:
+      - users-network
+
+# ----------------------------------------------------
+# Shared Infrastructure (Network & Storage)
+# ----------------------------------------------------
+networks:
+  users-network:
+    name: users-network
+    driver: bridge
+
+volumes:
+  user_db_data:
