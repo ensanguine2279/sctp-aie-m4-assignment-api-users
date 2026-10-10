@@ -62,7 +62,7 @@ docker compose up --build -d
 docker compose logs -f user-service
 
 # 5. Log in
-curl -i -X POST http://localhost:8080/auth/login \
+curl -i -X POST http://localhost:8022/auth/login \
   -H "Content-Type: application/json" \
   -d '{"username":"admin01","password":"<your ADMIN_PASSWORD_ENV>"}'
 ```
@@ -309,7 +309,7 @@ It logs in, checks the token (RS256, issuer, audience, roles, expiry), verifies 
 - Provide the private key as a mounted secret or from a secrets manager, never in the image or the repository, and keep it readable only by the service. Set a strong database password through the environment.
 - Use the same `JWT_ISSUER` and `JWT_AUDIENCE` here and in every consuming service.
 - Do not run the `dev` profile. The Compose file does not activate it, and it must stay that way.
-- Put a reverse proxy with TLS (Caddy, nginx or Traefik) in front, and do not expose port 8080 or the database port directly.
+- Put a reverse proxy with TLS (Caddy, nginx or Traefik) in front, and do not expose port 8022 or the database port directly.
 - Replace `ddl-auto=update` with Flyway or Liquibase migrations once the data matters, and check that the unique constraint on `username` exists.
 - Back up the `user_db_data` volume.
 - Keep `JWT_EXPIRATION_MS` short. Roles are baked into the token, so a role change or a deleted user only takes full effect when the old token expires.

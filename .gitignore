@@ -35,6 +35,7 @@ build/
 ### Environment Variables ###
 .env
 .env.*
+!.env.example
 
 ### Keys and Certificates ###
 *.pem
