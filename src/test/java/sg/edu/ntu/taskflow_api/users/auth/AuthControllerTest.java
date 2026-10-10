@@ -23,7 +23,6 @@ import org.mockito.ArgumentCaptor;
 
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.webmvc.test.autoconfigure.WebMvcTest;
-import org.springframework.context.annotation.Import;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.security.authentication.AuthenticationManager;
@@ -35,13 +34,11 @@ import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 
-import sg.edu.ntu.taskflow_api.users.config.SecurityConfig;
+import sg.edu.ntu.taskflow_api.users.WithRealSecurity;
 import sg.edu.ntu.taskflow_api.users.dto.ClaimsDto;
 import sg.edu.ntu.taskflow_api.users.exception.InvalidTokenException;
 import sg.edu.ntu.taskflow_api.users.exception.InvalidTokenException.Reason;
 import sg.edu.ntu.taskflow_api.users.security.JwtService;
-import sg.edu.ntu.taskflow_api.users.security.RestAuthenticationEntryPoint;
-import sg.edu.ntu.taskflow_api.users.security.RestAccessDeniedHandler;
 
 /**
  * Web-layer tests for AuthController.
@@ -53,7 +50,7 @@ import sg.edu.ntu.taskflow_api.users.security.RestAccessDeniedHandler;
  * real filter builds a real Authentication from it.
  */
 @WebMvcTest(AuthController.class)
-@Import({ SecurityConfig.class, RestAuthenticationEntryPoint.class, RestAccessDeniedHandler.class })
+@WithRealSecurity
 class AuthControllerTest {
 
         private static final String ADMIN = "Bearer admin-token";

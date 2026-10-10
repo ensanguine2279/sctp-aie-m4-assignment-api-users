@@ -28,13 +28,12 @@ import org.mockito.ArgumentCaptor;
 
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.webmvc.test.autoconfigure.WebMvcTest;
-import org.springframework.context.annotation.Import;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 
-import sg.edu.ntu.taskflow_api.users.config.SecurityConfig;
+import sg.edu.ntu.taskflow_api.users.WithRealSecurity;
 import sg.edu.ntu.taskflow_api.users.dto.ClaimsDto;
 import sg.edu.ntu.taskflow_api.users.entity.User;
 import sg.edu.ntu.taskflow_api.users.entity.UserRole;
@@ -43,8 +42,6 @@ import sg.edu.ntu.taskflow_api.users.exception.InvalidTokenException.Reason;
 import sg.edu.ntu.taskflow_api.users.exception.UserNotFoundException;
 import sg.edu.ntu.taskflow_api.users.exception.UsernameAlreadyExistsException;
 import sg.edu.ntu.taskflow_api.users.security.JwtService;
-import sg.edu.ntu.taskflow_api.users.security.RestAccessDeniedHandler;
-import sg.edu.ntu.taskflow_api.users.security.RestAuthenticationEntryPoint;
 import sg.edu.ntu.taskflow_api.users.security.UserSecurity;
 import sg.edu.ntu.taskflow_api.users.service.UserService;
 
@@ -63,7 +60,7 @@ import sg.edu.ntu.taskflow_api.users.service.UserService;
  * WRITE_ONLY, so serializing a User with ObjectMapper would drop the password.
  */
 @WebMvcTest(UserController.class)
-@Import({ SecurityConfig.class, RestAuthenticationEntryPoint.class, RestAccessDeniedHandler.class })
+@WithRealSecurity
 class UserControllerTest {
 
         private static final String ADMIN = "Bearer admin-token";
