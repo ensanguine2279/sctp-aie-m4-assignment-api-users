@@ -21,7 +21,7 @@ graph TD
 
     APP -- "1. Healthcheck dependency" --> DB
     DB_TOOL -- "Port 5432:5432" --> DB
-    REST_TOOL -- "Port 8080:8080" --> APP
+    REST_TOOL -- "Port 8022:8022" --> APP
     KEY -- "read-only secret at<br/>/run/secrets/jwt_private_key" --> APP
 
     style Bridge fill:#f9f9f9,stroke:#333,stroke-width:1px
@@ -51,7 +51,7 @@ DB_USER_ENV=postgres
 DB_PASSWORD_ENV=postgrespassword
 
 # Application Settings
-APP_PORT_ENV=8080
+APP_PORT_ENV=8022
 
 # Security Settings (RS256)
 JWT_EXPIRATION_MS_ENV=3600000
@@ -90,7 +90,7 @@ The private key itself never goes in `.env`. Only its host path can (`JWT_PRIVAT
 
 3. user: `"${LOCAL_UID:-1000}:${LOCAL_GID:-1000}"` runs the container as your host user's numeric ID, replacing the `spring` user from the Dockerfile. The mounted key keeps the owner and permissions of the host file, so a key with mode `600` owned by you can only be read by a process running as you. If your IDs are not 1000, set `LOCAL_UID` and `LOCAL_GID` in `.env`. The alternative is `chmod 644` on a dev-only key.
 
-4. ports: `"${APP_PORT_ENV:-8080}:${APP_PORT_ENV:-8080}"` uses the same variable for the host and container side. The application listens on `APP_PORT`, so the two must agree, or the host port forwards to a port where nothing is listening.
+4. ports: `"${APP_PORT_ENV:-8022}:${APP_PORT_ENV:-8022}"` uses the same variable for the host and container side. The application listens on `APP_PORT`, so the two must agree, or the host port forwards to a port where nothing is listening.
 
 5. secrets: `jwt_private_key` mounts the host key file read-only at `/run/secrets/jwt_private_key` inside this container, which is the path `JWT_PRIVATE_KEY_PATH` points to. The key never enters the image or the build context.
 
@@ -219,6 +219,6 @@ docker compose down -v
 | `Could not load private key ... AccessDeniedException` | The container user cannot read the mounted key. Run `chmod 644` on a dev-only key, or set `LOCAL_UID` and `LOCAL_GID` to your `id -u` and `id -g`. |
 | `docker compose up` fails before starting, naming the secret file | The key does not exist at the host path. Run `docker compose config` to see the resolved path, then create the key or set `JWT_PRIVATE_KEY_FILE`. |
 | `Could not load private key ... NoSuchFileException` | The secret is not mounted into the service, or `JWT_PRIVATE_KEY_PATH` is not `/run/secrets/jwt_private_key`. |
-| No response on `localhost:8080` | `APP_PORT_ENV` is missing or inconsistent. Look for `Tomcat started on port ...` in `docker compose logs user-service`. |
+| No response on `localhost:8022` | `APP_PORT_ENV` is missing or inconsistent. Look for `Tomcat started on port ...` in `docker compose logs user-service`. |
 | `Unable to determine Dialect without JDBC metadata` | The application cannot reach the database. Check that `user-db` is healthy and the `DB_*` values match. |
 | Every token rejected with 401 after a change | The issuer or audience differs between this service and the one validating tokens. |

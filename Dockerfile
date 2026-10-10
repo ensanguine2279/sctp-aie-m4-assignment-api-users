@@ -28,7 +28,7 @@ USER spring:spring
 COPY --from=builder /app/target/*.jar app.jar
 
 # Expose User Service port
-EXPOSE 8080
+EXPOSE 8022
 
 # Configure JVM flags for container resource limits and run
 ENTRYPOINT ["java", "-XX:+UseG1GC", "-XX:MaxRAMPercentage=75.0", "-jar", "app.jar"]

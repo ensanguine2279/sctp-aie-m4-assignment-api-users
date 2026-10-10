@@ -32,7 +32,7 @@ services:
     container_name: user-service
     user: "${LOCAL_UID:-1000}:${LOCAL_GID:-1000}" # Ensures the container runs with the same UID and GID as the host user
     ports:
-      - "${APP_PORT_ENV:-8080}:${APP_PORT_ENV:-8080}"
+      - "${APP_PORT_ENV:-8022}:${APP_PORT_ENV:-8022}"
     environment:
       - APP_PORT=${APP_PORT_ENV}
       - DB_HOST=user-db

@@ -133,7 +133,7 @@ You can run the container in isolation using the script `run-container.sh`. Sinc
 ```bash
 set -euo pipefail
 
-docker run --rm -p 8080:8080 \
+docker run --rm -p 8022:8022 \
   -e DB_HOST=localhost \
   -e DB_PORT=5432 \
   -e DB_NAME=userdb \
@@ -152,7 +152,7 @@ docker run --rm -p 8080:8080 \
 
 - `--rm`: Automatically deletes the container instance when it stops.
 
-- `-p 8080:8080`: Maps port 8080 of your host machine to port 8080 inside the container.
+- `-p 8022:8022`: Maps port 8022 of your host machine to port 8022 inside the container.
 
 - `-e KEY=VALUE`: Passes environment variables to satisfy application.yml.
 
