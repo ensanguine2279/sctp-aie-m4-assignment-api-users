@@ -57,7 +57,8 @@ public class JwtAuthFilter extends OncePerRequestFilter {
 
         // If there is no Authorization header, continue the chain.
         // SecurityConfig will decide whether the route requires authentication.
-        if (authHeader == null || !authHeader.startsWith("Bearer ")) {
+        // Use regionMatches to perform a case-insensitive check for the "Bearer " prefix.
+        if (authHeader == null || !authHeader.regionMatches(true, 0, "Bearer ", 0, "Bearer ".length())) {
             filterChain.doFilter(request, response);
             return;
         }

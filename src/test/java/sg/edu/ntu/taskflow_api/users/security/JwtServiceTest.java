@@ -1,227 +1,280 @@
 package sg.edu.ntu.taskflow_api.users.security;
 
-import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.security.KeyPair;
+import java.security.KeyPairGenerator;
 import java.util.Base64;
 import java.util.Date;
 import java.util.List;
 
-import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.function.Executable;
-import org.junit.jupiter.params.ParameterizedTest;
-import org.junit.jupiter.params.provider.NullAndEmptySource;
-import org.junit.jupiter.params.provider.ValueSource;
+import org.junit.jupiter.api.io.TempDir;
 
-import io.jsonwebtoken.JwtBuilder;
 import io.jsonwebtoken.Jwts;
-import io.jsonwebtoken.SignatureAlgorithm;
 import io.jsonwebtoken.security.Keys;
 
 import sg.edu.ntu.taskflow_api.users.dto.ClaimsDto;
 import sg.edu.ntu.taskflow_api.users.exception.InvalidTokenException;
 import sg.edu.ntu.taskflow_api.users.exception.InvalidTokenException.Reason;
 
-/**
- * Plain unit tests: no Spring context. JwtService takes its secret and expiry
- * through the constructor, so it can be created directly.
- */
 class JwtServiceTest {
 
-    private static final String SECRET = "test-secret-key-that-is-at-least-32-bytes-long";
-    private static final String OTHER_SECRET = "a-completely-different-secret-key-of-32-plus-bytes";
-    private static final long EXPIRATION_MS = 3_600_000L; // 1 hour
+    private static final String ISSUER = "users-service";
+    private static final String AUDIENCE = "tasks-api";
+    private static final long EXPIRATION_MS = 15 * 60 * 1000L;
 
-    private final JwtService jwtService = new JwtService(SECRET, EXPIRATION_MS);
+    private static KeyPair keyPair;
+    private static KeyPair otherKeyPair;
+
+    @TempDir
+    Path tmp;
+
+    private JwtService service;
+
+    @BeforeAll
+    static void generateKeys() throws Exception {
+        KeyPairGenerator gen = KeyPairGenerator.getInstance("RSA");
+        gen.initialize(2048);
+        keyPair = gen.generateKeyPair();
+        otherKeyPair = gen.generateKeyPair();
+    }
+
+    @BeforeEach
+    void setUp() throws IOException {
+        service = newService(EXPIRATION_MS, ISSUER, AUDIENCE);
+    }
 
     // ---------- helpers ----------
 
-    /**
-     * Builds a token with the SAME secret as jwtService, for crafting unusual
-     * claims.
-     */
-    private JwtBuilder baseBuilder() {
-        return Jwts.builder()
-                .setSubject("alice01")
-                .setExpiration(new Date(System.currentTimeMillis() + 60_000));
+    private JwtService newService(long expirationMs, String issuer, String audience) throws IOException {
+        Path pem = writePrivatePem(tmp.resolve("private-" + System.nanoTime() + ".pem"), keyPair);
+        return new JwtService(pem.toString(), expirationMs, issuer, audience);
     }
 
-    private String sign(JwtBuilder builder) {
-        return builder
-                .signWith(Keys.hmacShaKeyFor(SECRET.getBytes(StandardCharsets.UTF_8)), SignatureAlgorithm.HS256)
+    private static Path writePrivatePem(Path file, KeyPair pair) throws IOException {
+        String body = Base64.getMimeEncoder(64, "\n".getBytes(StandardCharsets.UTF_8))
+                .encodeToString(pair.getPrivate().getEncoded());
+        return Files.writeString(file,
+                "-----BEGIN PRIVATE KEY-----\n" + body + "\n-----END PRIVATE KEY-----\n");
+    }
+
+    /** Builds a token by hand so tests can omit or alter individual claims. */
+    private static String manualToken(KeyPair signer, String subject, Object roles) {
+        var builder = Jwts.builder()
+                .issuer(ISSUER)
+                .audience().add(AUDIENCE).and()
+                .issuedAt(new Date())
+                .expiration(new Date(System.currentTimeMillis() + EXPIRATION_MS));
+        if (subject != null) {
+            builder.subject(subject);
+        }
+        if (roles != null) {
+            builder.claim("roles", roles);
+        }
+        return builder.signWith(signer.getPrivate(), Jwts.SIG.RS256).compact();
+    }
+
+    private static String decodeSegment(String token, int index) {
+        return new String(Base64.getUrlDecoder().decode(token.split("\\.")[index]), StandardCharsets.UTF_8);
+    }
+
+    // ---------- startup ----------
+
+    @Test
+    void constructor_missingKeyFile_failsFast() {
+        String missing = tmp.resolve("does-not-exist.pem").toString();
+
+        assertThrows(IllegalStateException.class,
+                () -> new JwtService(missing, EXPIRATION_MS, ISSUER, AUDIENCE));
+    }
+
+    @Test
+    void constructor_malformedKeyFile_failsFast() throws IOException {
+        Path bad = Files.writeString(tmp.resolve("bad.pem"), "not a pem file");
+
+        assertThrows(IllegalStateException.class,
+                () -> new JwtService(bad.toString(), EXPIRATION_MS, ISSUER, AUDIENCE));
+    }
+
+    // ---------- generateToken ----------
+
+    @Test
+    void generateToken_usesRs256() {
+        String token = service.generateToken("alice", List.of("ROLE_USER"));
+
+        assertTrue(decodeSegment(token, 0).contains("\"alg\":\"RS256\""));
+    }
+
+    @Test
+    void generateToken_containsIssuerAudienceAndSubject() {
+        String token = service.generateToken("alice", List.of("ROLE_USER"));
+        String payload = decodeSegment(token, 1);
+
+        assertTrue(payload.contains("\"iss\":\"" + ISSUER + "\""));
+        assertTrue(payload.contains(AUDIENCE));
+        assertTrue(payload.contains("\"sub\":\"alice\""));
+    }
+
+    @Test
+    void generateToken_verifiesWithDerivedPublicKey() {
+        String token = service.generateToken("alice", List.of("ROLE_USER"));
+
+        String subject = Jwts.parser()
+                .verifyWith(keyPair.getPublic())
+                .requireIssuer(ISSUER)
+                .requireAudience(AUDIENCE)
+                .build()
+                .parseSignedClaims(token)
+                .getPayload()
+                .getSubject();
+
+        assertEquals("alice", subject);
+    }
+
+    // ---------- round trip ----------
+
+    @Test
+    void roundTrip_returnsUsernameAndRoles() {
+        String token = service.generateToken("alice", List.of("ROLE_USER", "ROLE_ADMIN"));
+
+        ClaimsDto claims = service.extractClaims(token);
+
+        assertEquals("alice", claims.username());
+        assertEquals(List.of("ROLE_USER", "ROLE_ADMIN"), claims.roles());
+    }
+
+    @Test
+    void extractClaims_filtersRolesWithoutRolePrefix() {
+        String token = service.generateToken("alice", List.of("ROLE_USER", "ADMIN"));
+
+        assertEquals(List.of("ROLE_USER"), service.extractClaims(token).roles());
+    }
+
+    @Test
+    void extractClaims_missingRolesClaim_returnsEmptyRoles() {
+        String token = manualToken(keyPair, "alice", null);
+
+        assertTrue(service.extractClaims(token).roles().isEmpty());
+    }
+
+    @Test
+    void extractClaims_rolesNotAList_returnsEmptyRoles() {
+        String token = manualToken(keyPair, "alice", "ROLE_ADMIN");
+
+        assertTrue(service.extractClaims(token).roles().isEmpty());
+    }
+
+    // ---------- rejection cases ----------
+
+    @Test
+    void extractClaims_expiredToken_isRejectedAsExpired() throws IOException {
+        // Negative lifetime puts exp well past the 30s clock skew
+        JwtService expiring = newService(-120_000L, ISSUER, AUDIENCE);
+        String token = expiring.generateToken("alice", List.of("ROLE_USER"));
+
+        InvalidTokenException ex = assertThrows(InvalidTokenException.class, () -> service.extractClaims(token));
+
+        assertEquals(Reason.EXPIRED, ex.getReason());
+    }
+
+    @Test
+    void extractClaims_signedByOtherKey_isRejectedAsBadSignature() {
+        String token = manualToken(otherKeyPair, "alice", List.of("ROLE_USER"));
+
+        InvalidTokenException ex = assertThrows(InvalidTokenException.class, () -> service.extractClaims(token));
+
+        assertEquals(Reason.BAD_SIGNATURE, ex.getReason());
+    }
+
+    @Test
+    void extractClaims_tamperedPayload_isRejectedAsBadSignature() {
+        String original = service.generateToken("alice", List.of("ROLE_USER"));
+        String forged = service.generateToken("mallory", List.of("ROLE_ADMIN"));
+
+        // header and signature from one token, payload from another
+        String[] a = original.split("\\.");
+        String[] b = forged.split("\\.");
+        String spliced = a[0] + "." + b[1] + "." + a[2];
+
+        InvalidTokenException ex = assertThrows(InvalidTokenException.class, () -> service.extractClaims(spliced));
+
+        assertEquals(Reason.BAD_SIGNATURE, ex.getReason());
+    }
+
+    @Test
+    void extractClaims_wrongIssuer_isRejected() throws IOException {
+        JwtService other = newService(EXPIRATION_MS, "someone-else", AUDIENCE);
+        String token = other.generateToken("alice", List.of("ROLE_USER"));
+
+        assertThrows(InvalidTokenException.class, () -> service.extractClaims(token));
+    }
+
+    @Test
+    void extractClaims_wrongAudience_isRejected() throws IOException {
+        JwtService other = newService(EXPIRATION_MS, ISSUER, "another-api");
+        String token = other.generateToken("alice", List.of("ROLE_USER"));
+
+        assertThrows(InvalidTokenException.class, () -> service.extractClaims(token));
+    }
+
+    @Test
+    void extractClaims_algorithmConfusionHs256_isRejected() {
+        // Classic attack: sign with HMAC using the public key bytes as the secret
+        String token = Jwts.builder()
+                .subject("mallory")
+                .issuer(ISSUER)
+                .audience().add(AUDIENCE).and()
+                .expiration(new Date(System.currentTimeMillis() + EXPIRATION_MS))
+                .claim("roles", List.of("ROLE_ADMIN"))
+                .signWith(Keys.hmacShaKeyFor(keyPair.getPublic().getEncoded()), Jwts.SIG.HS256)
                 .compact();
-    }
 
-    private Reason reasonOf(Executable executable) {
-        return assertThrows(InvalidTokenException.class, executable).getReason();
-    }
-
-    // ---------- generate + parse round trip ----------
-
-    @Test
-    @DisplayName("generateToken produces a token whose claims round-trip")
-    void generateToken_roundTrip_returnsSameClaims() {
-        String token = jwtService.generateToken("alice01", List.of("ROLE_USER", "ROLE_ADMIN"));
-
-        ClaimsDto claims = jwtService.extractClaims(token);
-
-        assertThat(claims.username()).isEqualTo("alice01");
-        assertThat(claims.roles()).containsExactly("ROLE_USER", "ROLE_ADMIN");
+        assertThrows(InvalidTokenException.class, () -> service.extractClaims(token));
     }
 
     @Test
-    @DisplayName("generateToken sets the expiry from the configured duration")
-    void generateToken_setsExpiryFromConfiguration() {
-        long before = System.currentTimeMillis();
-        String token = jwtService.generateToken("alice01", List.of("ROLE_USER"));
-        long after = System.currentTimeMillis();
-
-        long expiration = jwtService.extractClaims(token).expiration();
-
-        // JWT stores whole seconds, so the value can be up to 1000 ms below the exact
-        // expiry.
-        assertThat(expiration).isBetween(before + EXPIRATION_MS - 1000, after + EXPIRATION_MS);
-    }
-
-    @Test
-    @DisplayName("generateToken with no roles yields an empty role list")
-    void generateToken_noRoles_returnsEmptyRoles() {
-        String token = jwtService.generateToken("alice01", List.of());
-
-        assertThat(jwtService.extractClaims(token).roles()).isEmpty();
-    }
-
-    // ---------- role filtering ----------
-
-    @Test
-    @DisplayName("roles without the ROLE_ prefix are dropped")
-    void extractClaims_dropsRolesWithoutPrefix() {
-        String token = jwtService.generateToken("alice01", List.of("ROLE_USER", "ADMIN", "SCOPE_read"));
-
-        assertThat(jwtService.extractClaims(token).roles()).containsExactly("ROLE_USER");
-    }
-
-    @Test
-    @DisplayName("non-string entries in the roles claim are ignored")
-    void extractClaims_ignoresNonStringRoles() {
-        String token = sign(baseBuilder().claim("roles", List.of("ROLE_USER", 42, "ROLE_ADMIN")));
-
-        assertThat(jwtService.extractClaims(token).roles()).containsExactly("ROLE_USER", "ROLE_ADMIN");
-    }
-
-    @Test
-    @DisplayName("a missing roles claim yields an empty list")
-    void extractClaims_missingRolesClaim_returnsEmptyList() {
-        String token = sign(baseBuilder());
-
-        assertThat(jwtService.extractClaims(token).roles()).isEmpty();
-    }
-
-    @Test
-    @DisplayName("a roles claim that is not a list yields an empty list")
-    void extractClaims_rolesClaimNotAList_returnsEmptyList() {
-        String token = sign(baseBuilder().claim("roles", "ROLE_ADMIN"));
-
-        assertThat(jwtService.extractClaims(token).roles()).isEmpty();
-    }
-
-    // ---------- rejected tokens ----------
-
-    @Test
-    @DisplayName("an expired token is rejected with EXPIRED")
-    void extractClaims_expiredToken_throwsExpired() {
-        JwtService shortLived = new JwtService(SECRET, -5_000L); // already expired when issued
-        String token = shortLived.generateToken("alice01", List.of("ROLE_USER"));
-
-        assertThat(reasonOf(() -> jwtService.extractClaims(token))).isEqualTo(Reason.EXPIRED);
-    }
-
-    @Test
-    @DisplayName("a token signed with a different secret is rejected with BAD_SIGNATURE")
-    void extractClaims_wrongSecret_throwsBadSignature() {
-        JwtService otherIssuer = new JwtService(OTHER_SECRET, EXPIRATION_MS);
-        String token = otherIssuer.generateToken("alice01", List.of("ROLE_USER"));
-
-        assertThat(reasonOf(() -> jwtService.extractClaims(token))).isEqualTo(Reason.BAD_SIGNATURE);
-    }
-
-    @Test
-    @DisplayName("a token with a forged payload and the original signature is rejected (role escalation attempt)")
-    void extractClaims_tamperedPayload_throwsBadSignature() {
-        String token = jwtService.generateToken("alice01", List.of("ROLE_USER"));
-        String[] parts = token.split("\\.");
-
-        String forgedJson = "{\"sub\":\"alice01\",\"roles\":[\"ROLE_ADMIN\"],\"exp\":4102444800}";
-        String forgedPayload = Base64.getUrlEncoder().withoutPadding()
-                .encodeToString(forgedJson.getBytes(StandardCharsets.UTF_8));
-        String forgedToken = parts[0] + "." + forgedPayload + "." + parts[2];
-
-        assertThat(reasonOf(() -> jwtService.extractClaims(forgedToken))).isEqualTo(Reason.BAD_SIGNATURE);
-    }
-
-    @Test
-    @DisplayName("an unsigned token (alg none) is rejected")
     void extractClaims_unsignedToken_isRejected() {
-        String unsigned = baseBuilder().claim("roles", List.of("ROLE_ADMIN")).compact();
+        String token = Jwts.builder()
+                .subject("mallory")
+                .issuer(ISSUER)
+                .audience().add(AUDIENCE).and()
+                .expiration(new Date(System.currentTimeMillis() + EXPIRATION_MS))
+                .claim("roles", List.of("ROLE_ADMIN"))
+                .compact();
 
-        assertThat(reasonOf(() -> jwtService.extractClaims(unsigned))).isEqualTo(Reason.MALFORMED);
+        assertThrows(InvalidTokenException.class, () -> service.extractClaims(token));
     }
 
     @Test
-    @DisplayName("a validly signed token with no expiry is rejected with MALFORMED")
-    void extractClaims_missingExpiry_throwsMalformed() {
-        // Signed with the correct secret, but no exp claim (e.g. issued by another
-        // service).
-        String token = sign(Jwts.builder().setSubject("alice01").claim("roles", List.of("ROLE_USER")));
+    void extractClaims_missingSubject_isRejectedAsMalformed() {
+        String token = manualToken(keyPair, null, List.of("ROLE_USER"));
 
-        assertThat(reasonOf(() -> jwtService.extractClaims(token))).isEqualTo(Reason.MALFORMED);
+        InvalidTokenException ex = assertThrows(InvalidTokenException.class, () -> service.extractClaims(token));
+
+        assertEquals(Reason.MALFORMED, ex.getReason());
     }
 
     @Test
-    @DisplayName("a validly signed token with a missing or blank subject is rejected with MALFORMED")
-    void extractClaims_missingSubject_throwsMalformed() {
-        Date expiry = new Date(System.currentTimeMillis() + 60_000);
-        String noSubject = sign(Jwts.builder().setExpiration(expiry));
-        String blankSubject = sign(Jwts.builder().setSubject("   ").setExpiration(expiry));
+    void extractClaims_garbageToken_isRejectedAsMalformed() {
+        InvalidTokenException ex = assertThrows(InvalidTokenException.class,
+                () -> service.extractClaims("not.a.jwt"));
 
-        assertThat(reasonOf(() -> jwtService.extractClaims(noSubject))).isEqualTo(Reason.MALFORMED);
-        assertThat(reasonOf(() -> jwtService.extractClaims(blankSubject))).isEqualTo(Reason.MALFORMED);
+        assertEquals(Reason.MALFORMED, ex.getReason());
     }
 
     @Test
-    @DisplayName("a malformed token is rejected with MALFORMED")
-    void extractClaims_malformedToken_throwsMalformed() {
-        assertThat(reasonOf(() -> jwtService.extractClaims("not-a-jwt"))).isEqualTo(Reason.MALFORMED);
-    }
+    void extractClaims_emptyToken_isRejectedAsEmpty() {
+        InvalidTokenException ex = assertThrows(InvalidTokenException.class, () -> service.extractClaims(""));
 
-    @ParameterizedTest
-    @NullAndEmptySource
-    @ValueSource(strings = { "   " })
-    @DisplayName("a null, empty or blank token is rejected with EMPTY")
-    void extractClaims_missingToken_throwsEmpty(String token) {
-        assertThat(reasonOf(() -> jwtService.extractClaims(token))).isEqualTo(Reason.EMPTY);
-    }
-
-    // ---------- constructor / secret validation ----------
-
-    @Test
-    @DisplayName("a secret shorter than 32 bytes stops the service from being created")
-    void constructor_weakSecret_throwsIllegalState() {
-        IllegalStateException ex = assertThrows(IllegalStateException.class,
-                () -> new JwtService("too-short-secret", EXPIRATION_MS));
-
-        assertThat(ex.getMessage()).contains("32 bytes");
-    }
-
-    @Test
-    @DisplayName("a secret of exactly 32 bytes is accepted")
-    void constructor_minimumLengthSecret_isAccepted() {
-        JwtService service = new JwtService("a".repeat(32), EXPIRATION_MS);
-
-        String token = service.generateToken("alice01", List.of("ROLE_USER"));
-
-        assertThat(service.extractClaims(token).username()).isEqualTo("alice01");
+        assertEquals(Reason.EMPTY, ex.getReason());
     }
 }

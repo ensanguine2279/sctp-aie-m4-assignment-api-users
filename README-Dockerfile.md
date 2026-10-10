@@ -35,6 +35,8 @@ Tests are explicitly skipped during the container build process.
 
 - Hermetic Environment: Tests during container packaging may require mock database connections, external configurations, or active network resources that are not present inside the isolated Docker build context.
 
+- Keys: the tests generate their own throwaway RSA keys, so they never need a key file, and no key material is copied into the build.
+
 Separate Test Execution from Container Packaging
 
 - In CI/CD pipelines, testing and packaging are split into two separate pipeline stages.  By verifying test suites before invoking docker build, this ensures that broken code never reaches the Docker packaging step while keeping container compilation fast.
@@ -66,6 +68,8 @@ As `root`: The attacker gains full privileges inside the container, making it ea
 
 As `spring` (Non-Root): The process is constrained by Least Privilege. The attacker cannot modify system binaries, install software packages, or access protected OS files inside the container.
 
+**Note on the mounted key:** the application reads its RSA private key from a file mounted at runtime. That file keeps the owner and permissions of the host file, so a key with mode `600` owned by your host user cannot be read by the `spring` user, and startup fails with `AccessDeniedException`. For local development, `docker-compose.yml` therefore overrides the user with `user: "${LOCAL_UID:-1000}:${LOCAL_GID:-1000}"`, which runs the container as your host user's numeric ID. The container is still non-root. In a real deployment, mount the key from a secret store and give it ownership that matches the container user, rather than loosening permissions.
+
 
 ```bash
 "-XX:+UseG1GC"
@@ -95,6 +99,15 @@ ENTRYPOINT ["java", "-XX:+UseG1GC", "-XX:MaxRAMPercentage=75.0", "-jar", "app.ja
 
 Shell Form (`ENTRYPOINT java -jar app.jar`): Spawns `/bin/sh -c as PID 1`, wrapping `Java` as a child process. This blocks OS signals from reaching the JVM, causing the container to forcibly terminate after timeout limits.
 
+### Keys are not part of the image
+
+Nothing in this Dockerfile copies a key. The build stage copies only `.mvn/`, `mvnw`, `pom.xml` and `src`, and the runtime stage copies only the built JAR. The private key reaches the container at runtime as a mounted read-only file (`/run/secrets/jwt_private_key` under Compose), so the image can be pushed and shared without exposing anything. As a safety net against a key ending up in the build context by accident, add a `.dockerignore` next to the Dockerfile:
+
+```
+*.pem
+.env
+```
+
 ## Building the Image
 
 Run the `docker build` command from the root directory of the User Service (where the `Dockerfile` is located):
@@ -115,7 +128,7 @@ docker images | grep user-service
 
 ## Running the Container
 
-You can run the container in isolation using the script `run-container.sh`. Since the database isn't running yet, pass dummy environment variables to verify that the JVM boots and `JwtAuthFilter` initializes:
+You can run the container in isolation using the script `run-container.sh`. Since the database isn't running yet, pass dummy environment variables to verify that the JVM boots. The service also needs its RSA private key, which is mounted as a read-only file, the same way Compose mounts its secret:
 
 ```bash
 set -euo pipefail
@@ -126,7 +139,9 @@ docker run --rm -p 8080:8080 \
   -e DB_NAME=userdb \
   -e DB_USER=postgres \
   -e DB_PASSWORD=postgres \
-  -e JWT_SECRET=test-secret-key-that-is-at-least-32-bytes-long \
+  -e JWT_PRIVATE_KEY_PATH=/run/secrets/jwt_private_key \
+  -v "$HOME/.taskflow/keys/private.pem:/run/secrets/jwt_private_key:ro" \
+  --user "$(id -u):$(id -g)" \
   user-service:test
 ```
 - `-e`: The `errexit` option tells the shell to exit immediately if any command fails (returns a non-zero exit status).
@@ -141,6 +156,10 @@ docker run --rm -p 8080:8080 \
 
 - `-e KEY=VALUE`: Passes environment variables to satisfy application.yml.
 
+- `-v host:container:ro`: Mounts the private key file read-only inside the container. `JWT_PRIVATE_KEY_PATH` is the path inside the container, not on your machine.
+
+- `--user "$(id -u):$(id -g)"`: Runs the container as your host user so it can read a key with mode `600`. Without it, the `spring` user from the Dockerfile cannot read the file.
+
 ### What Will Happen
 
 1. Spring Boot Boots Up: The JRE will initialize with the JVM flags specified in your Dockerfile, read the passed -e environment variables, and start the application context.
@@ -150,3 +169,7 @@ docker run --rm -p 8080:8080 \
 3. Database Connection Timeout (Expected): Since DB_HOST=localhost points inside the isolated container where no PostgreSQL instance exists, HikariCP will log connection retries and eventually throw a connection exception.
 
 4. Clean Exit: Once you stop the process with Ctrl + C, Docker will clean up and delete the container instance automatically because of the --rm flag.
+
+### Checking the key
+
+The private key is loaded when `JwtService` is created. If the mounted key is missing or unreadable, the log shows `Could not load private key from /run/secrets/jwt_private_key`, followed by the cause (`NoSuchFileException` or `AccessDeniedException`). Depending on the order in which Spring creates its beans, the database connection error above may appear first. To check key loading end to end, use the Compose setup instead, which starts a real database.

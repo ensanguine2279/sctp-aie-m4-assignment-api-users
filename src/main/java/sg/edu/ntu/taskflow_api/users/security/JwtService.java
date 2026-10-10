@@ -1,21 +1,18 @@
 package sg.edu.ntu.taskflow_api.users.security;
 
-import java.nio.charset.StandardCharsets;
+import java.security.PrivateKey;
+import java.security.PublicKey;
+
 import java.util.Date;
 import java.util.List;
-
-import javax.crypto.SecretKey;
 
 import io.jsonwebtoken.Claims;
 import io.jsonwebtoken.ExpiredJwtException;
 import io.jsonwebtoken.JwtException;
 import io.jsonwebtoken.Jwts;
 import io.jsonwebtoken.MalformedJwtException;
-import io.jsonwebtoken.SignatureAlgorithm;
 import io.jsonwebtoken.UnsupportedJwtException;
-import io.jsonwebtoken.security.Keys;
 import io.jsonwebtoken.security.SignatureException;
-import io.jsonwebtoken.security.WeakKeyException;
 
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
@@ -27,16 +24,22 @@ import sg.edu.ntu.taskflow_api.users.exception.InvalidTokenException.Reason;
 @Service
 public class JwtService {
 
+    private final PrivateKey privateKey;
+    private final PublicKey publicKey;
     private final long jwtExpirationMs;
-    private final SecretKey signingKey;
+    private final String jwtIssuer;
+    private final String jwtAudience;
 
-    public JwtService(@Value("${jwt.secret}") String jwtSecret, @Value("${jwt.expiration-ms}") long jwtExpirationMs) {
-        try {
-            this.signingKey = Keys.hmacShaKeyFor(jwtSecret.getBytes(StandardCharsets.UTF_8));
-        } catch (WeakKeyException ex) {
-            throw new IllegalStateException("jwt.secret must be at least 32 bytes for HS256", ex);
-        }
+    public JwtService(
+            @Value("${jwt.private-key-path}") String privateKeyPath,
+            @Value("${jwt.expiration-ms}") long jwtExpirationMs,
+            @Value("${jwt.issuer}") String jwtIssuer,
+            @Value("${jwt.audience}") String jwtAudience) {
+        this.privateKey = PemKeyLoader.loadPrivateKey(privateKeyPath);
+        this.publicKey = PemKeyLoader.derivePublicKey(privateKey);
         this.jwtExpirationMs = jwtExpirationMs;
+        this.jwtIssuer = jwtIssuer;
+        this.jwtAudience = jwtAudience;
     }
 
     public String generateToken(String username, List<String> roles) {
@@ -44,21 +47,26 @@ public class JwtService {
         Date expiry = new Date(now.getTime() + jwtExpirationMs);
 
         return Jwts.builder()
-                .setSubject(username) // Who the token is for
-                .setIssuedAt(now) // When token was created
-                .setExpiration(expiry) // When token expires
-                .claim("roles", roles)
-                .signWith(signingKey, SignatureAlgorithm.HS256)
+                .issuer(jwtIssuer) // Who issued the token
+                .issuedAt(now) // When token was created
+                .audience().add(jwtAudience).and() // Who the token is intended for
+                .subject(username) // Who the token is for
+                .expiration(expiry) // When the token will expire
+                .claim("roles", roles) // The roles of the user
+                .signWith(privateKey, Jwts.SIG.RS256)
                 .compact();
     }
 
     private Claims parseToken(String token) {
         try {
-            return Jwts.parserBuilder()
-                    .setSigningKey(signingKey)
+            return Jwts.parser()
+                    .verifyWith(publicKey)
+                    .requireIssuer(jwtIssuer)
+                    .requireAudience(jwtAudience)
+                    .clockSkewSeconds(30)
                     .build()
-                    .parseClaimsJws(token)
-                    .getBody();
+                    .parseSignedClaims(token)
+                    .getPayload();
         } catch (ExpiredJwtException ex) {
             throw new InvalidTokenException(Reason.EXPIRED, "Token has expired", ex);
         } catch (SignatureException ex) {
@@ -73,9 +81,6 @@ public class JwtService {
     }
 
     public ClaimsDto extractClaims(String token) {
-        // parseClaimsJws validates the signature first, then decodes the payload.
-        // If the token was tampered with, it throws an exception before reaching
-        // getSubject().
         Claims claims = parseToken(token);
 
         String username = claims.getSubject();

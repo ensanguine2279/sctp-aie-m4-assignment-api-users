@@ -9,3 +9,5 @@ target/
 !.env.example
 *.md
 *.txt
+
+*.pem

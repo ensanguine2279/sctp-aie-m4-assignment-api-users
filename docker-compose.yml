@@ -30,8 +30,9 @@ services:
       dockerfile: Dockerfile
     image: ensanguine/user-service:1.0.0
     container_name: user-service
+    user: "${LOCAL_UID:-1000}:${LOCAL_GID:-1000}" # Ensures the container runs with the same UID and GID as the host user
     ports:
-      - "8080:8080"
+      - "${APP_PORT_ENV:-8080}:${APP_PORT_ENV:-8080}"
     environment:
       - APP_PORT=${APP_PORT_ENV}
       - DB_HOST=user-db
@@ -39,10 +40,14 @@ services:
       - DB_NAME=${DB_NAME_ENV}
       - DB_USER=${DB_USER_ENV}
       - DB_PASSWORD=${DB_PASSWORD_ENV}
-      - JWT_SECRET=${JWT_SECRET_ENV}
+      - JWT_PRIVATE_KEY_PATH=/run/secrets/jwt_private_key # Path inside the container 
       - JWT_EXPIRATION_MS=${JWT_EXPIRATION_MS_ENV}
+      - JWT_ISSUER=${JWT_ISSUER_ENV}
+      - JWT_AUDIENCE=${JWT_AUDIENCE_ENV}
       - ADMIN_USERNAME=${ADMIN_USERNAME_ENV}
       - ADMIN_PASSWORD=${ADMIN_PASSWORD_ENV}
+    secrets:
+      - jwt_private_key
     depends_on:
       user-db:
         condition: service_healthy # Waits for DB healthcheck to pass before booting Spring Boot
@@ -50,7 +55,14 @@ services:
       - users-network
 
 # ----------------------------------------------------
-# Shared Infrastructure (Network & Storage)
+# 3. Secrets Management for JWT Private Key
+# ----------------------------------------------------
+secrets:
+  jwt_private_key:
+    file: ${JWT_PRIVATE_KEY_FILE:-${HOME}/.taskflow/keys/private.pem}
+
+# ----------------------------------------------------
+# 4. Shared Infrastructure (Network & Storage)
 # ----------------------------------------------------
 networks:
   users-network:
