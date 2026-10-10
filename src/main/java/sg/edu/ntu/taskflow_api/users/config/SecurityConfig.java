@@ -14,6 +14,7 @@ import org.springframework.security.web.authentication.UsernamePasswordAuthentic
 import sg.edu.ntu.taskflow_api.users.security.JwtAuthFilter;
 import sg.edu.ntu.taskflow_api.users.security.JwtService;
 import sg.edu.ntu.taskflow_api.users.security.RestAuthenticationEntryPoint;
+import sg.edu.ntu.taskflow_api.users.security.RestAccessDeniedHandler;
 
 @Configuration
 @EnableWebSecurity
@@ -22,11 +23,16 @@ public class SecurityConfig {
 
         private final JwtService jwtService;
         private final RestAuthenticationEntryPoint authenticationEntryPoint;
+        private final RestAccessDeniedHandler accessDeniedHandler;
 
         // Spring calls this constructor and supplies both beans
-        public SecurityConfig(JwtService jwtService, RestAuthenticationEntryPoint authenticationEntryPoint) {
+        public SecurityConfig(
+                        JwtService jwtService,
+                        RestAuthenticationEntryPoint authenticationEntryPoint,
+                        RestAccessDeniedHandler accessDeniedHandler) {
                 this.jwtService = jwtService;
                 this.authenticationEntryPoint = authenticationEntryPoint;
+                this.accessDeniedHandler = accessDeniedHandler;
         }
 
         @Bean
@@ -46,7 +52,8 @@ public class SecurityConfig {
                                 // Unauthenticated requests (missing or invalid tokens) get a 401 whose body is
                                 // produced by GlobalExceptionHandler, via RestAuthenticationEntryPoint.
                                 .exceptionHandling(ex -> ex
-                                                .authenticationEntryPoint(authenticationEntryPoint))
+                                                .authenticationEntryPoint(authenticationEntryPoint)
+                                                .accessDeniedHandler(accessDeniedHandler))
 
                                 // /auth/login is public; everything else needs a valid token
                                 .authorizeHttpRequests(auth -> auth
