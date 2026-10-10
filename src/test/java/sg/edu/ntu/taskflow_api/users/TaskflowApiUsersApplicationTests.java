@@ -10,7 +10,7 @@ class TaskflowApiUsersApplicationTests {
 
 	@DynamicPropertySource
 	static void jwtProperties(DynamicPropertyRegistry registry) {
-		JwtKeysTest.register(registry);
+		TestJwtKeys.register(registry);
 	}
 
 	@Test

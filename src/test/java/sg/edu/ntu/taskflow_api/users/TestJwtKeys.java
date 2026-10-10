@@ -12,7 +12,7 @@ import java.util.Base64;
 
 import org.springframework.test.context.DynamicPropertyRegistry;
 
-final class JwtKeysTest {
+final class TestJwtKeys {
 
     static final String ISSUER = "users-service";
     static final String AUDIENCE = "tasks-api";
@@ -22,7 +22,7 @@ final class JwtKeysTest {
     static final Path SIGNING_KEY_FILE = writePrivatePem(SIGNING_KEYS);
     static final Path OTHER_KEY_FILE = writePrivatePem(OTHER_KEYS);
 
-    private JwtKeysTest() {}
+    private TestJwtKeys() {}
 
     static void register(DynamicPropertyRegistry registry) {
         registry.add("jwt.private-key-path", () -> SIGNING_KEY_FILE.toString());

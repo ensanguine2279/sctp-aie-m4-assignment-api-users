@@ -18,7 +18,9 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
+
 import org.mockito.ArgumentCaptor;
+
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.webmvc.test.autoconfigure.WebMvcTest;
 import org.springframework.context.annotation.Import;
@@ -39,6 +41,7 @@ import sg.edu.ntu.taskflow_api.users.exception.InvalidTokenException;
 import sg.edu.ntu.taskflow_api.users.exception.InvalidTokenException.Reason;
 import sg.edu.ntu.taskflow_api.users.security.JwtService;
 import sg.edu.ntu.taskflow_api.users.security.RestAuthenticationEntryPoint;
+import sg.edu.ntu.taskflow_api.users.security.RestAccessDeniedHandler;
 
 /**
  * Web-layer tests for AuthController.
@@ -50,7 +53,7 @@ import sg.edu.ntu.taskflow_api.users.security.RestAuthenticationEntryPoint;
  * real filter builds a real Authentication from it.
  */
 @WebMvcTest(AuthController.class)
-@Import({ SecurityConfig.class, RestAuthenticationEntryPoint.class })
+@Import({ SecurityConfig.class, RestAuthenticationEntryPoint.class, RestAccessDeniedHandler.class })
 class AuthControllerTest {
 
         private static final String ADMIN = "Bearer admin-token";

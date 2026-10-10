@@ -55,13 +55,13 @@ import sg.edu.ntu.taskflow_api.users.security.JwtService;
 class UsersEndToEndTest {
 
         // Package-private (not private) because the annotation above refers to them.
-        static final String ISSUER = JwtKeysTest.ISSUER;
-        static final String AUDIENCE = JwtKeysTest.AUDIENCE;
+        static final String ISSUER = TestJwtKeys.ISSUER;
+        static final String AUDIENCE = TestJwtKeys.AUDIENCE;
         private static final long EXPIRATION_MS = 3_600_000L;
 
         // Throwaway RSA keys generated per test run, so no real key file is needed.
-        private static final Path SIGNING_KEY_FILE = JwtKeysTest.SIGNING_KEY_FILE;
-        private static final Path OTHER_KEY_FILE = JwtKeysTest.OTHER_KEY_FILE;
+        private static final Path SIGNING_KEY_FILE = TestJwtKeys.SIGNING_KEY_FILE;
+        private static final Path OTHER_KEY_FILE = TestJwtKeys.OTHER_KEY_FILE;
 
         private static final String ADMIN_PASSWORD = "admin-pass-1";
         private static final String ALICE_PASSWORD = "alice-pass-1";
@@ -71,7 +71,7 @@ class UsersEndToEndTest {
 
         @DynamicPropertySource
         static void jwtProperties(DynamicPropertyRegistry registry) {
-                JwtKeysTest.register(registry);
+                TestJwtKeys.register(registry);
         }
 
         @Autowired
@@ -269,7 +269,7 @@ class UsersEndToEndTest {
                                 .audience().add(AUDIENCE).and()
                                 .expiration(exp)
                                 .claim("roles", List.of("ROLE_ADMIN"))
-                                .signWith(Keys.hmacShaKeyFor(JwtKeysTest.SIGNING_KEYS.getPublic().getEncoded()),
+                                .signWith(Keys.hmacShaKeyFor(TestJwtKeys.SIGNING_KEYS.getPublic().getEncoded()),
                                                 Jwts.SIG.HS256)
                                 .compact();
 
