@@ -338,7 +338,7 @@ Then read `sub` (the username, lowercase) and `roles` (a list of names with the 
 
 ## Authentication reference
 
-Click [here](AUTHENTICATION.md) for the token format, key handling and a troubleshooting table.
+Click [here](README-authentication.md) for the token format, key handling and a troubleshooting table.
 
 ## Dockerfile
 
