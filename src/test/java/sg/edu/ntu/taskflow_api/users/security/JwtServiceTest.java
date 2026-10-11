@@ -13,11 +13,15 @@ import java.security.KeyPairGenerator;
 import java.util.Base64;
 import java.util.Date;
 import java.util.List;
+import java.util.stream.Stream;
 
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.MethodSource;
 
 import io.jsonwebtoken.Jwts;
 import io.jsonwebtoken.security.Keys;
@@ -31,6 +35,7 @@ class JwtServiceTest {
     private static final String ISSUER = "users-service";
     private static final String AUDIENCE = "tasks-api";
     private static final long EXPIRATION_MS = 15 * 60 * 1000L;
+    private static final long USER_ID = 7L;
 
     private static KeyPair keyPair;
     private static KeyPair otherKeyPair;
@@ -67,8 +72,16 @@ class JwtServiceTest {
                 "-----BEGIN PRIVATE KEY-----\n" + body + "\n-----END PRIVATE KEY-----\n");
     }
 
-    /** Builds a token by hand so tests can omit or alter individual claims. */
+    /**
+     * Builds a token by hand so tests can omit or alter individual claims. It
+     * carries a valid uid.
+     */
     private static String manualToken(KeyPair signer, String subject, Object roles) {
+        return manualToken(signer, subject, roles, USER_ID);
+    }
+
+    /** As above, with an explicit uid claim. A null uid leaves the claim out. */
+    private static String manualToken(KeyPair signer, String subject, Object roles, Object uid) {
         var builder = Jwts.builder()
                 .issuer(ISSUER)
                 .audience().add(AUDIENCE).and()
@@ -79,6 +92,9 @@ class JwtServiceTest {
         }
         if (roles != null) {
             builder.claim("roles", roles);
+        }
+        if (uid != null) {
+            builder.claim("uid", uid);
         }
         return builder.signWith(signer.getPrivate(), Jwts.SIG.RS256).compact();
     }
@@ -109,14 +125,14 @@ class JwtServiceTest {
 
     @Test
     void generateToken_usesRs256() {
-        String token = service.generateToken("alice", List.of("ROLE_USER"));
+        String token = service.generateToken("alice", USER_ID, List.of("ROLE_USER"));
 
         assertTrue(decodeSegment(token, 0).contains("\"alg\":\"RS256\""));
     }
 
     @Test
     void generateToken_containsIssuerAudienceAndSubject() {
-        String token = service.generateToken("alice", List.of("ROLE_USER"));
+        String token = service.generateToken("alice", USER_ID, List.of("ROLE_USER"));
         String payload = decodeSegment(token, 1);
 
         assertTrue(payload.contains("\"iss\":\"" + ISSUER + "\""));
@@ -126,7 +142,7 @@ class JwtServiceTest {
 
     @Test
     void generateToken_verifiesWithDerivedPublicKey() {
-        String token = service.generateToken("alice", List.of("ROLE_USER"));
+        String token = service.generateToken("alice", USER_ID, List.of("ROLE_USER"));
 
         String subject = Jwts.parser()
                 .verifyWith(keyPair.getPublic())
@@ -140,11 +156,19 @@ class JwtServiceTest {
         assertEquals("alice", subject);
     }
 
+    @Test
+    void generateToken_writesTheUidAsAJsonNumber() {
+        String payload = decodeSegment(service.generateToken("alice", USER_ID, List.of("ROLE_USER")), 1);
+
+        assertTrue(payload.contains("\"uid\":7"));
+        assertTrue(!payload.contains("\"uid\":\"7\""));
+    }
+
     // ---------- round trip ----------
 
     @Test
     void roundTrip_returnsUsernameAndRoles() {
-        String token = service.generateToken("alice", List.of("ROLE_USER", "ROLE_ADMIN"));
+        String token = service.generateToken("alice", USER_ID, List.of("ROLE_USER", "ROLE_ADMIN"));
 
         ClaimsDto claims = service.extractClaims(token);
 
@@ -153,8 +177,23 @@ class JwtServiceTest {
     }
 
     @Test
+    void roundTrip_returnsUserId() {
+        String token = service.generateToken("alice", USER_ID, List.of("ROLE_USER"));
+
+        assertEquals(USER_ID, service.extractClaims(token).userId());
+    }
+
+    @Test
+    void roundTrip_userIdBeyondTheIntRange() {
+        long big = 5_000_000_000L;
+        String token = service.generateToken("alice", big, List.of("ROLE_USER"));
+
+        assertEquals(big, service.extractClaims(token).userId());
+    }
+
+    @Test
     void extractClaims_filtersRolesWithoutRolePrefix() {
-        String token = service.generateToken("alice", List.of("ROLE_USER", "ADMIN"));
+        String token = service.generateToken("alice", USER_ID, List.of("ROLE_USER", "ADMIN"));
 
         assertEquals(List.of("ROLE_USER"), service.extractClaims(token).roles());
     }
@@ -179,7 +218,7 @@ class JwtServiceTest {
     void extractClaims_expiredToken_isRejectedAsExpired() throws IOException {
         // Negative lifetime puts exp well past the 30s clock skew
         JwtService expiring = newService(-120_000L, ISSUER, AUDIENCE);
-        String token = expiring.generateToken("alice", List.of("ROLE_USER"));
+        String token = expiring.generateToken("alice", USER_ID, List.of("ROLE_USER"));
 
         InvalidTokenException ex = assertThrows(InvalidTokenException.class, () -> service.extractClaims(token));
 
@@ -197,8 +236,8 @@ class JwtServiceTest {
 
     @Test
     void extractClaims_tamperedPayload_isRejectedAsBadSignature() {
-        String original = service.generateToken("alice", List.of("ROLE_USER"));
-        String forged = service.generateToken("mallory", List.of("ROLE_ADMIN"));
+        String original = service.generateToken("alice", USER_ID, List.of("ROLE_USER"));
+        String forged = service.generateToken("mallory", USER_ID, List.of("ROLE_ADMIN"));
 
         // header and signature from one token, payload from another
         String[] a = original.split("\\.");
@@ -213,7 +252,7 @@ class JwtServiceTest {
     @Test
     void extractClaims_wrongIssuer_isRejected() throws IOException {
         JwtService other = newService(EXPIRATION_MS, "someone-else", AUDIENCE);
-        String token = other.generateToken("alice", List.of("ROLE_USER"));
+        String token = other.generateToken("alice", USER_ID, List.of("ROLE_USER"));
 
         assertThrows(InvalidTokenException.class, () -> service.extractClaims(token));
     }
@@ -221,7 +260,7 @@ class JwtServiceTest {
     @Test
     void extractClaims_wrongAudience_isRejected() throws IOException {
         JwtService other = newService(EXPIRATION_MS, ISSUER, "another-api");
-        String token = other.generateToken("alice", List.of("ROLE_USER"));
+        String token = other.generateToken("alice", USER_ID, List.of("ROLE_USER"));
 
         assertThrows(InvalidTokenException.class, () -> service.extractClaims(token));
     }
@@ -235,6 +274,7 @@ class JwtServiceTest {
                 .audience().add(AUDIENCE).and()
                 .expiration(new Date(System.currentTimeMillis() + EXPIRATION_MS))
                 .claim("roles", List.of("ROLE_ADMIN"))
+                .claim("uid", USER_ID)
                 .signWith(Keys.hmacShaKeyFor(keyPair.getPublic().getEncoded()), Jwts.SIG.HS256)
                 .compact();
 
@@ -249,6 +289,7 @@ class JwtServiceTest {
                 .audience().add(AUDIENCE).and()
                 .expiration(new Date(System.currentTimeMillis() + EXPIRATION_MS))
                 .claim("roles", List.of("ROLE_ADMIN"))
+                .claim("uid", USER_ID)
                 .compact();
 
         assertThrows(InvalidTokenException.class, () -> service.extractClaims(token));
@@ -257,6 +298,26 @@ class JwtServiceTest {
     @Test
     void extractClaims_missingSubject_isRejectedAsMalformed() {
         String token = manualToken(keyPair, null, List.of("ROLE_USER"));
+
+        InvalidTokenException ex = assertThrows(InvalidTokenException.class, () -> service.extractClaims(token));
+
+        assertEquals(Reason.MALFORMED, ex.getReason());
+    }
+
+    static Stream<Arguments> invalidUids() {
+        return Stream.of(
+                Arguments.of("missing", null),
+                Arguments.of("a string", "7"),
+                Arguments.of("a boolean", true),
+                Arguments.of("zero", 0),
+                Arguments.of("negative", -5),
+                Arguments.of("fractional", 1.5));
+    }
+
+    @ParameterizedTest(name = "uid {0} is rejected as malformed")
+    @MethodSource("invalidUids")
+    void extractClaims_invalidUid_isRejectedAsMalformed(String label, Object uid) {
+        String token = manualToken(keyPair, "alice", List.of("ROLE_USER"), uid);
 
         InvalidTokenException ex = assertThrows(InvalidTokenException.class, () -> service.extractClaims(token));
 

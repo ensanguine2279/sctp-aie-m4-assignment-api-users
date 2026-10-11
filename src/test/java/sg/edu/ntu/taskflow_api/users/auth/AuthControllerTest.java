@@ -3,7 +3,9 @@ package sg.edu.ntu.taskflow_api.users.auth;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyList;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
@@ -38,6 +40,7 @@ import sg.edu.ntu.taskflow_api.users.WithRealSecurity;
 import sg.edu.ntu.taskflow_api.users.dto.ClaimsDto;
 import sg.edu.ntu.taskflow_api.users.exception.InvalidTokenException;
 import sg.edu.ntu.taskflow_api.users.exception.InvalidTokenException.Reason;
+import sg.edu.ntu.taskflow_api.users.security.AppUserDetails;
 import sg.edu.ntu.taskflow_api.users.security.JwtService;
 
 /**
@@ -59,6 +62,19 @@ class AuthControllerTest {
 
         private static final String LOGIN_BODY = "{\"username\":\"alice01\",\"password\":\"password1\"}";
 
+        private static final long ALICE_ID = 7L;
+
+        /**
+         * What the real DaoAuthenticationProvider returns after a successful login: the
+         * principal
+         * is the AppUserDetails that DatabaseUserDetailsService loaded, so it carries
+         * the database id.
+         */
+        private static Authentication authenticatedAlice(List<SimpleGrantedAuthority> authorities) {
+                return UsernamePasswordAuthenticationToken.authenticated(
+                                new AppUserDetails(ALICE_ID, "alice01", "hash", authorities), null, authorities);
+        }
+
         @Autowired
         private MockMvc mockMvc;
 
@@ -72,9 +88,9 @@ class AuthControllerTest {
         void stubTokens() {
                 long expiry = System.currentTimeMillis() + 3_600_000L;
                 when(jwtService.extractClaims("admin-token"))
-                                .thenReturn(new ClaimsDto("admin01", List.of("ROLE_ADMIN"), expiry));
+                                .thenReturn(new ClaimsDto("admin01", List.of("ROLE_ADMIN"), expiry, 1L));
                 when(jwtService.extractClaims("user-token"))
-                                .thenReturn(new ClaimsDto("alice01", List.of("ROLE_USER"), expiry));
+                                .thenReturn(new ClaimsDto("alice01", List.of("ROLE_USER"), expiry, ALICE_ID));
                 when(jwtService.extractClaims("expired-token"))
                                 .thenThrow(new InvalidTokenException(Reason.EXPIRED, "Token has expired"));
         }
@@ -82,11 +98,10 @@ class AuthControllerTest {
         private void stubSuccessfulLogin() {
                 long expiry = System.currentTimeMillis() + 3_600_000L;
                 when(authenticationManager.authenticate(any(Authentication.class)))
-                                .thenReturn(UsernamePasswordAuthenticationToken.authenticated(
-                                                "alice01", null, List.of(new SimpleGrantedAuthority("ROLE_USER"))));
-                when(jwtService.generateToken(eq("alice01"), anyList())).thenReturn("jwt-token");
+                                .thenReturn(authenticatedAlice(List.of(new SimpleGrantedAuthority("ROLE_USER"))));
+                when(jwtService.generateToken(eq("alice01"), eq(ALICE_ID), anyList())).thenReturn("jwt-token");
                 when(jwtService.extractClaims("jwt-token"))
-                                .thenReturn(new ClaimsDto("alice01", List.of("ROLE_USER"), expiry));
+                                .thenReturn(new ClaimsDto("alice01", List.of("ROLE_USER"), expiry, ALICE_ID));
         }
 
         // ================= POST /auth/login =================
@@ -102,6 +117,42 @@ class AuthControllerTest {
                                 .andExpect(jsonPath("$.token").value("jwt-token"))
                                 .andExpect(jsonPath("$.claims.username").value("alice01"))
                                 .andExpect(jsonPath("$.claims.roles[0]").value("ROLE_USER"));
+        }
+
+        @Test
+        @DisplayName("login issues the token with the authenticated user's database id")
+        void login_passesTheDatabaseIdToTheToken() throws Exception {
+                stubSuccessfulLogin();
+
+                mockMvc.perform(post("/auth/login").contentType(MediaType.APPLICATION_JSON).content(LOGIN_BODY))
+                                .andExpect(status().isOk());
+
+                verify(jwtService).generateToken("alice01", ALICE_ID, List.of("ROLE_USER"));
+        }
+
+        @Test
+        @DisplayName("the login response's claims include the user's id")
+        void login_responseIncludesUserId() throws Exception {
+                stubSuccessfulLogin();
+
+                mockMvc.perform(post("/auth/login").contentType(MediaType.APPLICATION_JSON).content(LOGIN_BODY))
+                                .andExpect(status().isOk())
+                                .andExpect(jsonPath("$.claims.userId").value(ALICE_ID));
+        }
+
+        @Test
+        @DisplayName("a principal without a database id is a 500, never a token without a uid")
+        void login_principalWithoutId_returns500() throws Exception {
+                // A plain-String principal: not what DatabaseUserDetailsService produces.
+                when(authenticationManager.authenticate(any(Authentication.class)))
+                                .thenReturn(UsernamePasswordAuthenticationToken.authenticated(
+                                                "alice01", null, List.of(new SimpleGrantedAuthority("ROLE_USER"))));
+
+                mockMvc.perform(post("/auth/login").contentType(MediaType.APPLICATION_JSON).content(LOGIN_BODY))
+                                .andExpect(status().isInternalServerError())
+                                .andExpect(jsonPath("$.message").value("Something went wrong"));
+
+                verify(jwtService, never()).generateToken(any(), anyLong(), anyList());
         }
 
         @Test
@@ -139,14 +190,14 @@ class AuthControllerTest {
                 ArgumentCaptor<Authentication> captor = ArgumentCaptor.forClass(Authentication.class);
                 verify(authenticationManager).authenticate(captor.capture());
                 assertThat(captor.getValue().getName()).isEqualTo("alice01");
-                verify(jwtService).generateToken(eq("alice01"), anyList());
+                verify(jwtService).generateToken(eq("alice01"), eq(ALICE_ID), anyList());
         }
 
         @Test
         @DisplayName("login only puts ROLE_ authorities into the token")
         void login_filtersNonRoleAuthorities() throws Exception {
                 when(authenticationManager.authenticate(any(Authentication.class)))
-                                .thenReturn(UsernamePasswordAuthenticationToken.authenticated("alice01", null,
+                                .thenReturn(authenticatedAlice(
                                                 List.of(new SimpleGrantedAuthority("ROLE_USER"),
                                                                 new SimpleGrantedAuthority("SCOPE_read"),
                                                                 new SimpleGrantedAuthority("FACTOR_PASSWORD"))));
@@ -154,7 +205,7 @@ class AuthControllerTest {
                 mockMvc.perform(post("/auth/login").contentType(MediaType.APPLICATION_JSON).content(LOGIN_BODY))
                                 .andExpect(status().isOk());
 
-                verify(jwtService).generateToken("alice01", List.of("ROLE_USER"));
+                verify(jwtService).generateToken("alice01", ALICE_ID, List.of("ROLE_USER"));
         }
 
         @Test
@@ -247,7 +298,7 @@ class AuthControllerTest {
         void validate_asAdmin_validToken_returnsClaims() throws Exception {
                 when(jwtService.extractClaims("some-token"))
                                 .thenReturn(new ClaimsDto("bobby01", List.of("ROLE_MANAGER"),
-                                                System.currentTimeMillis() + 60_000L));
+                                                System.currentTimeMillis() + 60_000L, 8L));
 
                 mockMvc.perform(post("/auth/validate")
                                 .header(HttpHeaders.AUTHORIZATION, ADMIN)

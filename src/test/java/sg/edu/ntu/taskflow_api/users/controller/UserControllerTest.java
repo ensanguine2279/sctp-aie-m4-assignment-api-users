@@ -1,12 +1,14 @@
 package sg.edu.ntu.taskflow_api.users.controller;
 
 import static org.assertj.core.api.Assertions.assertThat;
+
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
+
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
@@ -89,11 +91,11 @@ class UserControllerTest {
         void stubTokens() {
                 long expiry = System.currentTimeMillis() + 3_600_000L;
                 when(jwtService.extractClaims("admin-token"))
-                                .thenReturn(new ClaimsDto("admin01", List.of("ROLE_ADMIN"), expiry));
+                                .thenReturn(new ClaimsDto("admin01", List.of("ROLE_ADMIN"), expiry, 1L));
                 when(jwtService.extractClaims("manager-token"))
-                                .thenReturn(new ClaimsDto("manager1", List.of("ROLE_MANAGER"), expiry));
+                                .thenReturn(new ClaimsDto("manager1", List.of("ROLE_MANAGER"), expiry, 2L));
                 when(jwtService.extractClaims("user-token"))
-                                .thenReturn(new ClaimsDto("alice01", List.of("ROLE_USER"), expiry));
+                                .thenReturn(new ClaimsDto("alice01", List.of("ROLE_USER"), expiry, 3L));
                 when(jwtService.extractClaims("expired-token"))
                                 .thenThrow(new InvalidTokenException(Reason.EXPIRED, "Token has expired"));
         }

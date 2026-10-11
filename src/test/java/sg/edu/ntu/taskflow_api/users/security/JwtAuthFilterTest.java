@@ -1,7 +1,9 @@
 package sg.edu.ntu.taskflow_api.users.security;
 
 import static org.assertj.core.api.Assertions.assertThat;
+
 import static org.junit.jupiter.api.Assertions.assertThrows;
+
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
@@ -13,8 +15,10 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+
 import org.springframework.http.HttpHeaders;
 import org.springframework.mock.web.MockFilterChain;
 import org.springframework.mock.web.MockHttpServletRequest;
@@ -64,7 +68,8 @@ class JwtAuthFilterTest {
     }
 
     private ClaimsDto claims(String username, List<String> roles) {
-        return new ClaimsDto(username, roles, System.currentTimeMillis() + 3_600_000L);
+        // The filter does not use the user id, so any valid one will do.
+        return new ClaimsDto(username, roles, System.currentTimeMillis() + 3_600_000L, 1L);
     }
 
     // ---------- shouldNotFilter ----------

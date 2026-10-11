@@ -19,6 +19,7 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 import jakarta.validation.Valid;
+import sg.edu.ntu.taskflow_api.users.security.AppUserDetails;
 import sg.edu.ntu.taskflow_api.users.security.JwtService;
 
 import sg.edu.ntu.taskflow_api.users.dto.ClaimsDto;
@@ -62,8 +63,14 @@ public class AuthController {
                     .filter(role -> role.startsWith("ROLE_"))
                     .toList();
 
+            // The principal comes from DatabaseUserDetailsService and carries the database
+            // id, which goes into the token as the "uid" claim.
+            if (!(authentication.getPrincipal() instanceof AppUserDetails principal)) {
+                throw new InternalAuthenticationServiceException("Unexpected principal type after login");
+            }
+
             // If authentication succeeds, generate and return a token with claims
-            String token = jwtService.generateToken(username, roles);
+            String token = jwtService.generateToken(username, principal.getId(), roles);
             ClaimsDto claims = jwtService.extractClaims(token);
 
             logger.debug("Generated claims for user: {}", claims);
@@ -80,10 +87,9 @@ public class AuthController {
             throw ex;
         } catch (AuthenticationException ex) {
             // InternalAuthenticationServiceException is a subclass of
-            // AuthenticationException, so a database
-            // outage during login is logged as a failed attempt and returns 401. Catch it
-            // first, rethrow it,
-            // and let the GlobalExceptionHandler handle it
+            // AuthenticationException, so a database outage during login is logged as a
+            // failed attempt and returns 401. Catch it first, rethrow it, and let the
+            // GlobalExceptionHandler handle it
             if (!(ex instanceof InternalAuthenticationServiceException)) {
                 logger.warn("Failed login attempt for user: {}", logUsername);
             }

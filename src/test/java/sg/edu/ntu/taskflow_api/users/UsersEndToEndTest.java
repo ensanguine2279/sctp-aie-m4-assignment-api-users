@@ -9,7 +9,10 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
+import java.util.Arrays;
+import java.util.Base64;
 import java.util.Date;
 import java.util.List;
 
@@ -58,6 +61,9 @@ class UsersEndToEndTest {
         static final String ISSUER = TestJwtKeys.ISSUER;
         static final String AUDIENCE = TestJwtKeys.AUDIENCE;
         private static final long EXPIRATION_MS = 3_600_000L;
+        // generateToken needs a user id. For tokens that are rejected for another
+        // reason, any valid id will do.
+        private static final long ANY_UID = 1L;
 
         // Throwaway RSA keys generated per test run, so no real key file is needed.
         private static final Path SIGNING_KEY_FILE = TestJwtKeys.SIGNING_KEY_FILE;
@@ -116,6 +122,28 @@ class UsersEndToEndTest {
 
         private long idOf(String username) {
                 return userRepository.findByUsername(username).orElseThrow().getId();
+        }
+
+        /**
+         * The decoded JSON payload of a JWT, to check what is really inside the token.
+         */
+        private static String payloadOf(String token) {
+                return new String(Base64.getUrlDecoder().decode(token.split("\\.")[1]), StandardCharsets.UTF_8);
+        }
+
+        /**
+         * A correctly signed token with the right issuer and audience, and the given
+         * "uid" claim (null omits it).
+         */
+        private static String tokenWithUid(Object uid) {
+                return Jwts.builder()
+                                .subject("admin01").issuer(ISSUER)
+                                .audience().add(AUDIENCE).and()
+                                .expiration(new Date(System.currentTimeMillis() + EXPIRATION_MS))
+                                .claim("roles", List.of("ROLE_ADMIN"))
+                                .claim("uid", uid)
+                                .signWith(TestJwtKeys.SIGNING_KEYS.getPrivate(), Jwts.SIG.RS256)
+                                .compact();
         }
 
         // ================= login =================
@@ -179,6 +207,39 @@ class UsersEndToEndTest {
                                 .andExpect(jsonPath("$.message").value("Authentication failed"));
         }
 
+        @Test
+        @DisplayName("the token carries the user's database id as a numeric uid claim")
+        void login_tokenCarriesUid() throws Exception {
+                long adminId = idOf("admin01");
+                String json = mockMvc.perform(post("/auth/login")
+                                .contentType(MediaType.APPLICATION_JSON)
+                                .content(loginBody("admin01", ADMIN_PASSWORD)))
+                                .andExpect(status().isOk())
+                                // the response's claims show it too
+                                .andExpect(jsonPath("$.claims.userId").value(adminId))
+                                .andReturn().getResponse().getContentAsString();
+
+                // what is really inside the signed token: a JSON number, not a string
+                String payload = payloadOf(JsonPath.read(json, "$.token"));
+                Object uid = JsonPath.read(payload, "$.uid");
+                assertThat(uid).isInstanceOf(Number.class);
+                assertThat(((Number) uid).longValue()).isEqualTo(adminId);
+        }
+
+        @Test
+        @DisplayName("each user's token carries their own id")
+        void login_eachUserGetsTheirOwnUid() throws Exception {
+                String aliceToken = loginAndGetToken("alice01", ALICE_PASSWORD);
+                String bobbyToken = loginAndGetToken("bobby01", BOBBY_PASSWORD);
+
+                long aliceUid = ((Number) JsonPath.read(payloadOf(aliceToken), "$.uid")).longValue();
+                long bobbyUid = ((Number) JsonPath.read(payloadOf(bobbyToken), "$.uid")).longValue();
+
+                assertThat(aliceUid).isEqualTo(idOf("alice01"));
+                assertThat(bobbyUid).isEqualTo(idOf("bobby01"));
+                assertThat(aliceUid).isNotEqualTo(bobbyUid);
+        }
+
         // ================= using the token =================
 
         @Test
@@ -205,7 +266,7 @@ class UsersEndToEndTest {
         @DisplayName("a token signed with a different private key is rejected")
         void forgedToken_returns401() throws Exception {
                 String forged = new JwtService(OTHER_KEY_FILE.toString(), EXPIRATION_MS, ISSUER, AUDIENCE)
-                                .generateToken("admin01", List.of("ROLE_ADMIN"));
+                                .generateToken("admin01", ANY_UID, List.of("ROLE_ADMIN"));
 
                 mockMvc.perform(get("/api/users").header(HttpHeaders.AUTHORIZATION, bearer(forged)))
                                 .andExpect(status().isUnauthorized())
@@ -218,7 +279,7 @@ class UsersEndToEndTest {
                 // The parser allows 30s of clock skew, so the token must expire well beyond
                 // that.
                 String expired = new JwtService(SIGNING_KEY_FILE.toString(), -120_000L, ISSUER, AUDIENCE)
-                                .generateToken("admin01", List.of("ROLE_ADMIN"));
+                                .generateToken("admin01", ANY_UID, List.of("ROLE_ADMIN"));
 
                 mockMvc.perform(get("/api/users").header(HttpHeaders.AUTHORIZATION, bearer(expired)))
                                 .andExpect(status().isUnauthorized())
@@ -230,15 +291,31 @@ class UsersEndToEndTest {
         void wrongIssuerOrAudience_returns401() throws Exception {
                 String wrongIssuer = new JwtService(SIGNING_KEY_FILE.toString(), EXPIRATION_MS, "someone-else",
                                 AUDIENCE)
-                                .generateToken("admin01", List.of("ROLE_ADMIN"));
+                                .generateToken("admin01", ANY_UID, List.of("ROLE_ADMIN"));
                 String wrongAudience = new JwtService(SIGNING_KEY_FILE.toString(), EXPIRATION_MS, ISSUER, "another-api")
-                                .generateToken("admin01", List.of("ROLE_ADMIN"));
+                                .generateToken("admin01", ANY_UID, List.of("ROLE_ADMIN"));
 
                 mockMvc.perform(get("/api/users").header(HttpHeaders.AUTHORIZATION, bearer(wrongIssuer)))
                                 .andExpect(status().isUnauthorized());
 
                 mockMvc.perform(get("/api/users").header(HttpHeaders.AUTHORIZATION, bearer(wrongAudience)))
                                 .andExpect(status().isUnauthorized());
+        }
+
+        @Test
+        @DisplayName("a correctly signed token without a valid uid claim is rejected")
+        void tokenWithoutValidUid_returns401() throws Exception {
+                // Control: the helper's token is accepted when the uid is fine, so the 401s
+                // below are about the uid.
+                mockMvc.perform(get("/api/users").header(HttpHeaders.AUTHORIZATION, bearer(tokenWithUid(1L))))
+                                .andExpect(status().isOk());
+
+                // null omits the claim. The rest are present but invalid.
+                for (Object uid : Arrays.asList(null, "1", true, 0, -1, 1.5)) {
+                        mockMvc.perform(get("/api/users").header(HttpHeaders.AUTHORIZATION, bearer(tokenWithUid(uid))))
+                                        .andExpect(status().isUnauthorized())
+                                        .andExpect(jsonPath("$.message").value("Token has no valid uid"));
+                }
         }
 
         @Test
@@ -269,6 +346,7 @@ class UsersEndToEndTest {
                                 .audience().add(AUDIENCE).and()
                                 .expiration(exp)
                                 .claim("roles", List.of("ROLE_ADMIN"))
+                                .claim("uid", ANY_UID)
                                 .signWith(Keys.hmacShaKeyFor(TestJwtKeys.SIGNING_KEYS.getPublic().getEncoded()),
                                                 Jwts.SIG.HS256)
                                 .compact();
@@ -278,6 +356,7 @@ class UsersEndToEndTest {
                                 .audience().add(AUDIENCE).and()
                                 .expiration(exp)
                                 .claim("roles", List.of("ROLE_ADMIN"))
+                                .claim("uid", ANY_UID)
                                 .compact();
 
                 for (String token : List.of(hs256, unsigned)) {
@@ -349,7 +428,8 @@ class UsersEndToEndTest {
                                 .content(body))
                                 .andExpect(status().isOk())
                                 .andExpect(jsonPath("$.valid").value(true))
-                                .andExpect(jsonPath("$.claims.username").value("alice01"));
+                                .andExpect(jsonPath("$.claims.username").value("alice01"))
+                                .andExpect(jsonPath("$.claims.userId").value(idOf("alice01")));
         }
 
         // ================= admin workflows =================

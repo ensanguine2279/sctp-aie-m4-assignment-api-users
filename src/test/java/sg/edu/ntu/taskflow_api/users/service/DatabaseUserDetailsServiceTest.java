@@ -13,9 +13,11 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
+
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+
 import org.springframework.security.authentication.BadCredentialsException;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.authentication.dao.DaoAuthenticationProvider;
@@ -29,6 +31,7 @@ import org.springframework.security.crypto.password.PasswordEncoder;
 import sg.edu.ntu.taskflow_api.users.entity.User;
 import sg.edu.ntu.taskflow_api.users.entity.UserRole;
 import sg.edu.ntu.taskflow_api.users.repository.UserRepository;
+import sg.edu.ntu.taskflow_api.users.security.AppUserDetails;
 
 /**
  * Plain unit tests: no Spring context, UserRepository is mocked.
@@ -111,6 +114,19 @@ class DatabaseUserDetailsServiceTest {
     }
 
     @Test
+    @DisplayName("the principal is an AppUserDetails carrying the database id")
+    void loadUserByUsername_carriesDatabaseId() {
+        User stored = user("alice01", "hash", UserRole.ADMIN);
+        stored.setId(7);
+        when(userRepository.findByUsername("alice01")).thenReturn(Optional.of(stored));
+
+        UserDetails details = userDetailsService.loadUserByUsername("alice01");
+
+        assertThat(details).isInstanceOf(AppUserDetails.class);
+        assertThat(((AppUserDetails) details).getId()).isEqualTo(7L);
+    }
+
+    @Test
     @DisplayName("an unknown username throws UsernameNotFoundException")
     void loadUserByUsername_missingUser_throws() {
         when(userRepository.findByUsername("nobody01")).thenReturn(Optional.empty());
@@ -151,6 +167,22 @@ class DatabaseUserDetailsServiceTest {
                 .extracting(GrantedAuthority::getAuthority)
                 .filteredOn(authority -> authority.startsWith("ROLE_"))
                 .containsExactly("ROLE_ADMIN");
+    }
+
+    @Test
+    @DisplayName("login: the authenticated principal still carries the database id (AuthController reads it for the uid claim)")
+    void authenticate_principalCarriesDatabaseId() {
+        User stored = user("alice01", passwordEncoder.encode(RAW_PASSWORD), UserRole.ADMIN);
+        stored.setId(7);
+        when(userRepository.findByUsername("alice01")).thenReturn(Optional.of(stored));
+
+        Authentication result = provider()
+                .authenticate(UsernamePasswordAuthenticationToken.unauthenticated("alice01", RAW_PASSWORD));
+
+        // AuthController relies on the provider returning the same principal type that
+        // loadUserByUsername produced. This pins that assumption.
+        assertThat(result.getPrincipal()).isInstanceOf(AppUserDetails.class);
+        assertThat(((AppUserDetails) result.getPrincipal()).getId()).isEqualTo(7L);
     }
 
     @Test

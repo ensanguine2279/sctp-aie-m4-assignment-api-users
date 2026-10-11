@@ -42,7 +42,7 @@ public class JwtService {
         this.jwtAudience = jwtAudience;
     }
 
-    public String generateToken(String username, List<String> roles) {
+    public String generateToken(String username, long userId, List<String> roles) {
         Date now = new Date();
         Date expiry = new Date(now.getTime() + jwtExpirationMs);
 
@@ -51,6 +51,7 @@ public class JwtService {
                 .issuedAt(now) // When token was created
                 .audience().add(jwtAudience).and() // Who the token is intended for
                 .subject(username) // Who the token is for
+                .claim("uid", userId) // The user's database id
                 .expiration(expiry) // When the token will expire
                 .claim("roles", roles) // The roles of the user
                 .signWith(privateKey, Jwts.SIG.RS256)
@@ -80,6 +81,24 @@ public class JwtService {
         }
     }
 
+    /**
+     * The "uid" claim is required and must be a positive whole JSON number. A token
+     * without one (for example issued before this claim existed) is rejected, the
+     * same
+     * rule the tasks API applies.
+     */
+    private long extractUserId(Claims claims) {
+        Object uid = claims.get("uid");
+        if (uid instanceof Number number) {
+            long value = number.longValue();
+            // The double comparison rejects 1.5 and numbers too large for a long.
+            if (value > 0 && number.doubleValue() == (double) value) {
+                return value;
+            }
+        }
+        throw new InvalidTokenException(Reason.MALFORMED, "Token has no valid uid");
+    }
+
     public ClaimsDto extractClaims(String token) {
         Claims claims = parseToken(token);
 
@@ -93,9 +112,10 @@ public class JwtService {
             throw new InvalidTokenException(Reason.MALFORMED, "Token has no expiry");
         }
 
+        long userId = extractUserId(claims);
         List<String> roles = extractRoles(claims);
 
-        return new ClaimsDto(username, roles, expiration.getTime());
+        return new ClaimsDto(username, roles, expiration.getTime(), userId);
     }
 
     private List<String> extractRoles(Claims claims) {
