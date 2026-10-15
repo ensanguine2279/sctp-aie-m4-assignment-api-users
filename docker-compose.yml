@@ -10,7 +10,7 @@ services:
       POSTGRES_USER: ${DB_USER_ENV}
       POSTGRES_PASSWORD: ${DB_PASSWORD_ENV}
     ports:
-      - "5432:5432" # Host:Container port mapping
+      - "${DB_HOST_PORT_ENV:-5422}:5432" # Host:Container port mapping
     volumes:
       - user_db_data:/var/lib/postgresql/data # Persistent storage
     healthcheck:
@@ -35,8 +35,8 @@ services:
       - "${APP_PORT_ENV:-8022}:${APP_PORT_ENV:-8022}"
     environment:
       - APP_PORT=${APP_PORT_ENV}
-      - DB_HOST=user-db
-      - DB_PORT=${DB_PORT_ENV}
+      - DB_HOST=${DB_HOST_ENV}
+      - DB_PORT=5432
       - DB_NAME=${DB_NAME_ENV}
       - DB_USER=${DB_USER_ENV}
       - DB_PASSWORD=${DB_PASSWORD_ENV}

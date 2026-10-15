@@ -10,6 +10,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.KeyPair;
 import java.security.KeyPairGenerator;
+import java.security.PublicKey;
 import java.util.Base64;
 import java.util.Date;
 import java.util.List;
@@ -62,7 +63,7 @@ class JwtServiceTest {
 
     private JwtService newService(long expirationMs, String issuer, String audience) throws IOException {
         Path pem = writePrivatePem(tmp.resolve("private-" + System.nanoTime() + ".pem"), keyPair);
-        return new JwtService(pem.toString(), expirationMs, issuer, audience);
+        return new JwtService(null, pem.toString(), expirationMs, issuer, audience);
     }
 
     private static Path writePrivatePem(Path file, KeyPair pair) throws IOException {
@@ -70,6 +71,35 @@ class JwtServiceTest {
                 .encodeToString(pair.getPrivate().getEncoded());
         return Files.writeString(file,
                 "-----BEGIN PRIVATE KEY-----\n" + body + "\n-----END PRIVATE KEY-----\n");
+    }
+
+    private String privatePem() throws IOException {
+        return Files.readString(writePrivatePem(tmp.resolve("base64-private.pem"), keyPair));
+    }
+
+    private static String pem(String label, byte[] der) {
+        String body = Base64.getMimeEncoder(64, "\n".getBytes(StandardCharsets.UTF_8)).encodeToString(der);
+        return "-----BEGIN " + label + "-----\n" + body + "\n-----END " + label + "-----\n";
+    }
+
+    private static JwtService fromKeyValue(String value) {
+        return new JwtService(value, null, EXPIRATION_MS, ISSUER, AUDIENCE);
+    }
+
+    private static KeyPair newKeyPair(String algorithm, int bits) throws Exception {
+        KeyPairGenerator gen = KeyPairGenerator.getInstance(algorithm);
+        gen.initialize(bits);
+        return gen.generateKeyPair();
+    }
+
+    private static String oneLineBase64(String text) {
+        return Base64.getEncoder().encodeToString(text.getBytes(StandardCharsets.UTF_8));
+    }
+
+    private void assertCanGenerateAndExtractToken(JwtService jwtService) {
+        String token = jwtService.generateToken("alice", USER_ID, List.of("ROLE_USER"));
+
+        assertEquals("alice", jwtService.extractClaims(token).username());
     }
 
     /**
@@ -110,7 +140,7 @@ class JwtServiceTest {
         String missing = tmp.resolve("does-not-exist.pem").toString();
 
         assertThrows(IllegalStateException.class,
-                () -> new JwtService(missing, EXPIRATION_MS, ISSUER, AUDIENCE));
+                () -> new JwtService(null, missing, EXPIRATION_MS, ISSUER, AUDIENCE));
     }
 
     @Test
@@ -118,7 +148,190 @@ class JwtServiceTest {
         Path bad = Files.writeString(tmp.resolve("bad.pem"), "not a pem file");
 
         assertThrows(IllegalStateException.class,
-                () -> new JwtService(bad.toString(), EXPIRATION_MS, ISSUER, AUDIENCE));
+                () -> new JwtService(null, bad.toString(), EXPIRATION_MS, ISSUER, AUDIENCE));
+    }
+
+    @Test
+    void constructor_base64EncodedPemLoadsKey() throws IOException {
+        String encodedPem = Base64.getEncoder()
+                .encodeToString(privatePem().getBytes(StandardCharsets.UTF_8));
+        JwtService loaded = new JwtService(encodedPem, null, EXPIRATION_MS, ISSUER, AUDIENCE);
+
+        assertCanGenerateAndExtractToken(loaded);
+    }
+
+    @Test
+    void constructor_rawPemLoadsKey() throws IOException {
+        JwtService loaded = new JwtService(privatePem(), null, EXPIRATION_MS, ISSUER, AUDIENCE);
+
+        assertCanGenerateAndExtractToken(loaded);
+    }
+
+    @Test
+    void constructor_base64KeyTakesPrecedenceOverFilePath() throws IOException {
+        String encodedPem = Base64.getEncoder()
+                .encodeToString(privatePem().getBytes(StandardCharsets.UTF_8));
+        String missingPath = tmp.resolve("does-not-exist.pem").toString();
+        JwtService loaded = new JwtService(encodedPem, missingPath, EXPIRATION_MS, ISSUER, AUDIENCE);
+
+        assertCanGenerateAndExtractToken(loaded);
+    }
+
+    @Test
+    void constructor_blankBase64FallsBackToKeyFile() throws IOException {
+        Path pem = writePrivatePem(tmp.resolve("fallback-private.pem"), keyPair);
+        JwtService loaded = new JwtService(" \t", pem.toString(), EXPIRATION_MS, ISSUER, AUDIENCE);
+
+        assertCanGenerateAndExtractToken(loaded);
+    }
+
+    @Test
+    void constructor_missingKeySources_failsFast() {
+        IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
+                () -> new JwtService(null, " \t", EXPIRATION_MS, ISSUER, AUDIENCE));
+
+        assertTrue(ex.getMessage().contains("Neither 'jwt.private-key-base64' nor 'jwt.private-key-path'"));
+    }
+
+    @Test
+    void constructor_invalidBase64Key_failsFast() {
+        IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
+                () -> new JwtService("not-valid-base64", null, EXPIRATION_MS, ISSUER, AUDIENCE));
+
+        assertTrue(ex.getMessage().contains("Failed to load JWT private key from Base64 environment variable"));
+    }
+
+    // ---------- the key as an environment variable: the formats people actually
+    // paste ----------
+
+    @Test
+    void constructor_rawPemWithLeadingWhitespace_loadsKey() throws IOException {
+        // a dashboard often leaves a blank line or spaces in front of a pasted value
+        assertCanGenerateAndExtractToken(fromKeyValue("\n  " + privatePem()));
+    }
+
+    @Test
+    void constructor_rawPemWithWindowsLineEndings_loadsKey() throws IOException {
+        assertCanGenerateAndExtractToken(fromKeyValue(privatePem().replace("\n", "\r\n")));
+    }
+
+    @Test
+    void constructor_rawPemOnOneLineWithEscapedNewlines_loadsKey() throws IOException {
+        // some platforms store the PEM on a single line with a literal backslash and n
+        // instead of line breaks
+        assertCanGenerateAndExtractToken(fromKeyValue(privatePem().trim().replace("\n", "\\n")));
+    }
+
+    @Test
+    void constructor_base64WrappedAcrossLines_loadsKey() throws IOException {
+        // what plain `base64 private.pem` prints on Linux: wrapped at 76 columns
+        String wrapped = Base64.getMimeEncoder(76, "\n".getBytes(StandardCharsets.UTF_8))
+                .encodeToString(privatePem().getBytes(StandardCharsets.UTF_8));
+        assertTrue(wrapped.contains("\n"));
+
+        assertCanGenerateAndExtractToken(fromKeyValue(wrapped));
+    }
+
+    @Test
+    void constructor_base64WithSurroundingWhitespace_loadsKey() throws IOException {
+        assertCanGenerateAndExtractToken(fromKeyValue("  " + oneLineBase64(privatePem()) + "\n"));
+    }
+
+    @Test
+    void constructor_invalidBase64DoesNotFallBackToTheKeyFile() throws IOException {
+        // A broken variable must stop the app. It must not quietly start with another
+        // key from the path.
+        Path validFile = writePrivatePem(tmp.resolve("valid-private.pem"), keyPair);
+
+        IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
+                () -> new JwtService("garbage", validFile.toString(), EXPIRATION_MS, ISSUER, AUDIENCE));
+
+        assertTrue(ex.getMessage().contains("Failed to load JWT private key from Base64 environment variable"));
+    }
+
+    @Test
+    void constructor_base64KeyIsTheSameKeyAsTheFile() throws IOException {
+        JwtService fromBase64 = fromKeyValue(oneLineBase64(privatePem()));
+
+        // each accepts the other's tokens, and both verify with the real public key
+        String token = fromBase64.generateToken("alice", USER_ID, List.of("ROLE_USER"));
+        assertEquals("alice", service.extractClaims(token).username());
+        PublicKey publicKey = keyPair.getPublic();
+        assertEquals("alice", Jwts.parser().verifyWith(publicKey).requireIssuer(ISSUER).requireAudience(AUDIENCE)
+                .build().parseSignedClaims(token).getPayload().getSubject());
+    }
+
+    @Test
+    void constructor_pkcs1Key_isRejectedWithAHelpfulMessage() {
+        String pkcs1 = pem("RSA PRIVATE KEY", keyPair.getPrivate().getEncoded());
+
+        for (String value : List.of(pkcs1, oneLineBase64(pkcs1))) {
+            IllegalArgumentException ex = assertThrows(IllegalArgumentException.class, () -> fromKeyValue(value));
+
+            assertTrue(ex.getMessage().contains("PKCS#8"));
+            assertTrue(ex.getMessage().contains("RSA PRIVATE KEY"));
+            assertTrue(ex.getMessage().contains("openssl pkcs8 -topk8"));
+        }
+    }
+
+    @Test
+    void constructor_publicKeyPastedByMistake_isRejected() {
+        String publicPem = pem("PUBLIC KEY", keyPair.getPublic().getEncoded());
+
+        IllegalArgumentException ex = assertThrows(IllegalArgumentException.class, () -> fromKeyValue(publicPem));
+
+        assertTrue(ex.getMessage().contains("PUBLIC KEY"));
+    }
+
+    @Test
+    void constructor_encryptedKey_isRejected() {
+        String encrypted = pem("ENCRYPTED PRIVATE KEY", keyPair.getPrivate().getEncoded());
+
+        IllegalArgumentException ex = assertThrows(IllegalArgumentException.class, () -> fromKeyValue(encrypted));
+
+        assertTrue(ex.getMessage().contains("ENCRYPTED PRIVATE KEY"));
+    }
+
+    @Test
+    void constructor_nonRsaKey_isRejected() throws Exception {
+        KeyPair ec = newKeyPair("EC", 256);
+
+        assertThrows(IllegalArgumentException.class,
+                () -> fromKeyValue(pem("PRIVATE KEY", ec.getPrivate().getEncoded())));
+    }
+
+    @Test
+    void constructor_weakRsaKey_failsAtStartup_notOnTheFirstLogin() throws Exception {
+        KeyPair weak = newKeyPair("RSA", 1024);
+
+        // as an environment variable
+        IllegalStateException fromVariable = assertThrows(IllegalStateException.class,
+                () -> fromKeyValue(pem("PRIVATE KEY", weak.getPrivate().getEncoded())));
+        assertTrue(fromVariable.getMessage().contains("at least 2048 bits"));
+
+        // and from a file, which must follow the same rule
+        Path weakFile = writePrivatePem(tmp.resolve("weak-private.pem"), weak);
+        assertThrows(IllegalStateException.class,
+                () -> new JwtService(null, weakFile.toString(), EXPIRATION_MS, ISSUER, AUDIENCE));
+    }
+
+    @Test
+    void constructor_errorsNeverContainTheKeyMaterial() throws IOException {
+        // The failure is logged at startup, so the message and its causes must not echo
+        // the secret.
+        String body = oneLineBase64(privatePem()).substring(0, 60);
+        String pkcs1 = pem("RSA PRIVATE KEY", keyPair.getPrivate().getEncoded());
+        String pkcs1Body = pkcs1.replaceAll("-----[A-Z ]+-----", "").replaceAll("\\s+", "").substring(0, 60);
+
+        assertDoesNotLeak(assertThrows(IllegalArgumentException.class, () -> fromKeyValue(body + "!!!")), body);
+        assertDoesNotLeak(assertThrows(IllegalArgumentException.class, () -> fromKeyValue(pkcs1)), pkcs1Body);
+    }
+
+    private static void assertDoesNotLeak(Throwable failure, String secret) {
+        for (Throwable t = failure; t != null; t = t.getCause()) {
+            assertTrue(t.getMessage() == null || !t.getMessage().contains(secret),
+                    "an error message contains the key: " + t.getMessage());
+        }
     }
 
     // ---------- generateToken ----------

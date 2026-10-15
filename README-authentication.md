@@ -30,6 +30,7 @@ The users service is the only service that issues tokens. It signs JWTs with an 
 | `iss` | `jwt.issuer` (default `user-service`) |
 | `aud` | `jwt.audience` (default `taskflow-api`) |
 | `sub` | the username |
+| `uid` | the user's database id, a positive JSON number. Required: a token without a valid `uid` is rejected by both services. |
 | `iat`, `exp` | issue and expiry time. Lifetime is `jwt.expiration-ms` (default 1 hour). |
 | `roles` | a list of strings, each starting with `ROLE_` (e.g. `["ROLE_ADMIN"]`) |
 
@@ -39,7 +40,7 @@ A token is rejected for any of these reasons:
 |---|---|
 | `EXPIRED` | past `exp` plus the 30s skew |
 | `BAD_SIGNATURE` | signed with a different key, or the payload was changed |
-| `MALFORMED` | not a valid JWT, or any other validation failure (unsupported algorithm, missing subject or expiry, wrong issuer or audience) |
+| `MALFORMED` | not a valid JWT, or any other validation failure (unsupported algorithm, missing subject, expiry or valid `uid`, wrong issuer or audience) |
 | `EMPTY` | the token is blank |
 
 Tokens cannot be revoked. Keep the lifetime short, and handle disabled users and logout on the users-service side.
@@ -51,7 +52,7 @@ Tokens cannot be revoked. Keep the lifetime short, and handle disabled users and
 | `POST /auth/login` | public |
 | `POST /auth/validate` | admin only |
 | `GET /api/users`, create and delete users | admin only |
-| `GET /api/users/{id}` | admin, or the user reading their own profile |
+| `GET /api/users/{id}` | admin, or the user reading their own profile (matched by the `uid` in the token, with no database lookup) |
 
 An unauthenticated or invalid request gets a 401. An authenticated user without permission gets a 403.
 
@@ -91,6 +92,23 @@ export JWT_PRIVATE_KEY_PATH=$HOME/.taskflow/keys/private.pem
 ```
 
 Environment variables set in a Docker Compose file or `.env` are not visible to a plain `mvn` run. To avoid exporting every time, put the path in a git-ignored `config/application.properties`, which Spring Boot loads automatically from the working directory.
+
+### Run on a platform that only supports environment variables (for example Railway)
+
+Set `JWT_PRIVATE_KEY_BASE64` to the whole private key file, base64-encoded on one line:
+
+```bash
+base64 -w0 private.pem                 # Linux
+base64 -i private.pem | tr -d '\n'     # macOS
+```
+
+The raw PEM text is accepted too, as are line breaks, surrounding whitespace and literal `\n` sequences, which dashboards sometimes produce.
+
+- `JWT_PRIVATE_KEY_BASE64` wins over `JWT_PRIVATE_KEY_PATH` when both are set. A broken value stops the app at startup: it does not fall back to the path.
+- The key must be an unencrypted **PKCS#8** RSA key of at least 2048 bits. A `BEGIN RSA PRIVATE KEY`, encrypted, EC or public key is rejected with a message that names what was found.
+- Generate a **new** key pair for production. Never upload the development key, and give the public half (`public.pem`) to the tasks API.
+- Treat the variable as a secret: mark it sealed or hidden if the platform offers that, never print the environment in logs, and do not expose an endpoint that dumps it. Regenerate the key if it was ever pasted into a chat, a screenshot or a commit.
+- The `jwt.issuer` and `jwt.audience` values must still match the tasks API.
 
 ### Run with Docker Compose
 
@@ -151,4 +169,5 @@ It reads `.env` and `~/.taskflow/keys/`, starts a fresh stack, and exits non-zer
 - **Revocation:** a token stays valid until it expires. There is no logout or deny list.
 - **Key rotation:** there is one static key pair. Rotating means replacing the key and restarting every service, and existing tokens stop working. Supporting rotation needs a `kid` header and a JWKS endpoint.
 - **Seeded admin and schema:** the default admin credentials are for development only, and `spring.jpa.hibernate.ddl-auto=create` recreates all tables on every start.
-- **Tasks API:** not yet integrated. It will need the public key, the same issuer and audience, and no token-issuing code.
+- **Tasks API:** integrated. It verifies these tokens with the public key only. See the tasks API's `AUTHENTICATION.md`.
+- **Token claims:** the `uid` claim means tokens issued before it was added stop working. Users must log in again.

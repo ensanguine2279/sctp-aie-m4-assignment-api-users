@@ -32,6 +32,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.webmvc.test.autoconfigure.WebMvcTest;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
+import org.springframework.security.core.Authentication;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 
@@ -43,6 +44,7 @@ import sg.edu.ntu.taskflow_api.users.exception.InvalidTokenException;
 import sg.edu.ntu.taskflow_api.users.exception.InvalidTokenException.Reason;
 import sg.edu.ntu.taskflow_api.users.exception.UserNotFoundException;
 import sg.edu.ntu.taskflow_api.users.exception.UsernameAlreadyExistsException;
+import sg.edu.ntu.taskflow_api.users.security.AuthenticatedUser;
 import sg.edu.ntu.taskflow_api.users.security.JwtService;
 import sg.edu.ntu.taskflow_api.users.security.UserSecurity;
 import sg.edu.ntu.taskflow_api.users.service.UserService;
@@ -177,12 +179,28 @@ class UserControllerTest {
         @Test
         @DisplayName("GET /api/users/{id} as the user themselves returns 200")
         void getUserById_ownProfile_returns200() throws Exception {
-                when(userSecurity.isSelf(1L, "alice01")).thenReturn(true);
+                when(userSecurity.isSelf(eq(1L), any(Authentication.class))).thenReturn(true);
                 when(userService.getUserById(1L)).thenReturn(user(1L, "alice01", UserRole.USER));
 
                 mockMvc.perform(get("/api/users/1").header(HttpHeaders.AUTHORIZATION, USER))
                                 .andExpect(status().isOk())
                                 .andExpect(jsonPath("$.username").value("alice01"));
+        }
+
+        @Test
+        @DisplayName("the rule receives the caller's authentication, with the id from the token")
+        void getUserById_ruleReceivesTheAuthenticationWithTheTokenUserId() throws Exception {
+                when(userSecurity.isSelf(eq(1L), any(Authentication.class))).thenReturn(true);
+                when(userService.getUserById(1L)).thenReturn(user(1L, "alice01", UserRole.USER));
+
+                mockMvc.perform(get("/api/users/1").header(HttpHeaders.AUTHORIZATION, USER))
+                                .andExpect(status().isOk());
+
+                ArgumentCaptor<Authentication> captor = ArgumentCaptor.forClass(Authentication.class);
+                verify(userSecurity).isSelf(eq(1L), captor.capture());
+                // user-token is stubbed above as alice01 with user id 3
+                org.assertj.core.api.Assertions.assertThat(captor.getValue().getPrincipal())
+                                .isEqualTo(new AuthenticatedUser("alice01", 3L));
         }
 
         @Test

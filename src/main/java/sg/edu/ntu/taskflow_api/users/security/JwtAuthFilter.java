@@ -75,9 +75,10 @@ public class JwtAuthFilter extends OncePerRequestFilter {
                     .map(SimpleGrantedAuthority::new)
                     .toList();
 
-            // Create an authentication token using the extracted username and authorities
+            // The principal carries the username and the user's id (the "uid" claim), so security
+            // rules can compare ids without a database lookup. getName() still returns the username.
             UsernamePasswordAuthenticationToken authentication = new UsernamePasswordAuthenticationToken(
-                    claims.username(), null, authorities);
+                    new AuthenticatedUser(claims.username(), claims.userId()), null, authorities);
 
             // Embed the authentication details into the token
             authentication.setDetails(new WebAuthenticationDetailsSource().buildDetails(request));

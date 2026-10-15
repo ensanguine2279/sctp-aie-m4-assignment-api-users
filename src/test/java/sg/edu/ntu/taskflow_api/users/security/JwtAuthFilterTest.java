@@ -67,9 +67,10 @@ class JwtAuthFilterTest {
         SecurityContextHolder.clearContext();
     }
 
+    private static final long USER_ID = 7L;
+
     private ClaimsDto claims(String username, List<String> roles) {
-        // The filter does not use the user id, so any valid one will do.
-        return new ClaimsDto(username, roles, System.currentTimeMillis() + 3_600_000L, 1L);
+        return new ClaimsDto(username, roles, System.currentTimeMillis() + 3_600_000L, USER_ID);
     }
 
     // ---------- shouldNotFilter ----------
@@ -146,6 +147,19 @@ class JwtAuthFilterTest {
         assertThat(auth.getDetails()).isInstanceOf(WebAuthenticationDetails.class);
         assertThat(request.getAttribute(JwtAuthFilter.INVALID_TOKEN_ATTRIBUTE)).isNull();
         assertThat(chain.getRequest()).isNotNull();
+    }
+
+    @Test
+    @DisplayName("the principal carries the username and the user's id")
+    void validToken_principalCarriesUsernameAndUserId() throws Exception {
+        request.addHeader(HttpHeaders.AUTHORIZATION, "Bearer good-token");
+        when(jwtService.extractClaims("good-token")).thenReturn(claims("alice01", List.of("ROLE_USER")));
+
+        filter.doFilter(request, response, chain);
+
+        Authentication auth = SecurityContextHolder.getContext().getAuthentication();
+        assertThat(auth.getPrincipal()).isEqualTo(new AuthenticatedUser("alice01", USER_ID));
+        assertThat(auth.getName()).isEqualTo("alice01");
     }
 
     @Test

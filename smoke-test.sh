@@ -20,7 +20,8 @@
 #
 # Assumptions about the API (taken from UsersEndToEndTest): POST /auth/login returns
 # {"token": ...}; POST /api/users takes username/password/name/role and returns an "id";
-# GET /api/users is admin-only; /auth/validate is admin-only.
+# GET /api/users is admin-only; /auth/validate is admin-only. Tokens carry the user's
+# database id as a numeric "uid" claim, and /auth/validate returns it as claims.userId.
 
 set -uo pipefail
 
@@ -114,6 +115,27 @@ forge_hs256() {
     printf '%s.%s.%s' "$header" "$payload" "$sig"
 }
 
+# forge_rs256 PRIVATE_KEY_FILE PAYLOAD_JSON -> a token with a VALID signature and the given claims
+forge_rs256() {
+    local key=$1 payload_json=$2 header payload sig
+    header=$(b64url_encode '{"alg":"RS256","typ":"JWT"}')
+    payload=$(b64url_encode "$payload_json")
+    sig=$(printf '%s' "$header.$payload" \
+        | openssl dgst -sha256 -sign "$key" -binary 2> /dev/null \
+        | openssl base64 -A | tr '+/' '-_' | tr -d '=')
+    printf '%s.%s.%s' "$header" "$payload" "$sig"
+}
+
+# signed_admin_token ISSUER AUDIENCE UID_FRAGMENT -> admin token signed with the real key.
+# UID_FRAGMENT is spliced into the JSON: ',"uid":1' for a good one, '' to omit it, ',"uid":"1"' for a string.
+signed_admin_token() {
+    local now json
+    now=$(date +%s)
+    json=$(printf '{"iss":"%s","aud":["%s"],"sub":"%s","iat":%s,"exp":%s,"roles":["ROLE_ADMIN"]%s}' \
+        "$1" "$2" "$ADMIN_USERNAME" "$now" "$((now + 600))" "$3")
+    forge_rs256 "$PRIVATE_KEY_FILE" "$json"
+}
+
 # tamper_signature TOKEN -> same token with one character changed in the middle of the signature
 tamper_signature() {
     local h p s c
@@ -177,6 +199,12 @@ check_token_contents() {
     [[ $header == *'"alg":"RS256"'* ]] && ok "header alg is RS256" || bad "header alg is RS256" "header: $header"
     [[ $payload == *'"roles":["ROLE_ADMIN"]'* ]] && ok "roles claim is exactly [ROLE_ADMIN]" || bad "roles claim is exactly [ROLE_ADMIN]" "payload: $payload"
     [[ $payload == *"\"sub\":\"$ADMIN_USERNAME\""* ]] && ok "subject is $ADMIN_USERNAME" || bad "subject is $ADMIN_USERNAME" "payload: $payload"
+    local uid_re='"uid":([0-9]+)[,}]'
+    if [[ $payload =~ $uid_re && ${BASH_REMATCH[1]} -gt 0 ]]; then
+        ok "uid claim is a positive JSON number (${BASH_REMATCH[1]})"
+    else
+        bad "uid claim is a positive JSON number" "payload: $payload"
+    fi
 
     local expected_iss expected_aud
     expected_iss=${JWT_ISSUER:-$(env_value JWT_ISSUER_ENV)}
@@ -236,6 +264,11 @@ check_access() {
     else
         bad "/auth/validate reports valid:true" "${BODY:0:200}"
     fi
+    if printf '%s' "$BODY" | grep -Eq '"userId"[[:space:]]*:[[:space:]]*[1-9][0-9]*'; then
+        ok "/auth/validate returns claims.userId"
+    else
+        bad "/auth/validate returns claims.userId" "${BODY:0:200}"
+    fi
 }
 
 check_rejections() {
@@ -265,6 +298,23 @@ check_rejections() {
     else
         skip "algorithm-confusion check (no public key at $PUBLIC_KEY_FILE)"
     fi
+
+    local iss aud
+    iss=${JWT_ISSUER:-$(env_value JWT_ISSUER_ENV)}
+    aud=${JWT_AUDIENCE:-$(env_value JWT_AUDIENCE_ENV)}
+    if [[ -f $PRIVATE_KEY_FILE && -n $iss && -n $aud ]]; then
+        # Control first: proves the forged-token helper works, so the 401s below are about the uid.
+        request GET /api/users -H "$(auth "Bearer $(signed_admin_token "$iss" "$aud" ',"uid":1')")"
+        expect_code "control: correctly signed token with a uid is accepted" 200
+        request GET /api/users -H "$(auth "Bearer $(signed_admin_token "$iss" "$aud" '')")"
+        expect_code "correctly signed token with no uid claim" 401
+        request GET /api/users -H "$(auth "Bearer $(signed_admin_token "$iss" "$aud" ',"uid":"1"')")"
+        expect_code "correctly signed token with a string uid" 401
+        request GET /api/users -H "$(auth "Bearer $(signed_admin_token "$iss" "$aud" ',"uid":0')")"
+        expect_code "correctly signed token with uid 0" 401
+    else
+        skip "uid rejection checks (need private.pem and JWT_ISSUER_ENV / JWT_AUDIENCE_ENV in $ENV_FILE)"
+    fi
 }
 
 check_roles() {
@@ -291,6 +341,12 @@ check_roles() {
     local payload
     payload=$(b64url_decode "$(jwt_part "$user_token" 2)")
     [[ $payload == *'"roles":["ROLE_USER"]'* ]] && ok "user token roles are [ROLE_USER]" || bad "user token roles are [ROLE_USER]" "payload: $payload"
+
+    if [[ $payload == *"\"uid\":$CREATED_ID,"* || $payload == *"\"uid\":$CREATED_ID}"* ]]; then
+        ok "user token uid is the new user's id ($CREATED_ID)"
+    else
+        bad "user token uid is the new user's id ($CREATED_ID)" "payload: $payload"
+    fi
 
     request GET /api/users -H "$(auth "Bearer $user_token")"
     expect_code "USER token cannot list all users" 403

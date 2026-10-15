@@ -1,10 +1,19 @@
 package sg.edu.ntu.taskflow_api.users.security;
 
+import java.nio.charset.StandardCharsets;
+
+import java.security.GeneralSecurityException;
+import java.security.KeyFactory;
 import java.security.PrivateKey;
 import java.security.PublicKey;
+import java.security.interfaces.RSAKey;
+import java.security.spec.PKCS8EncodedKeySpec;
 
+import java.util.Base64;
 import java.util.Date;
 import java.util.List;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 import io.jsonwebtoken.Claims;
 import io.jsonwebtoken.ExpiredJwtException;
@@ -24,6 +33,10 @@ import sg.edu.ntu.taskflow_api.users.exception.InvalidTokenException.Reason;
 @Service
 public class JwtService {
 
+    private static final String KEY_ERROR = "Failed to load JWT private key from Base64 environment variable";
+    private static final Pattern PEM_LABEL = Pattern.compile("-----BEGIN ([A-Z0-9 ]+)-----");
+    private static final int MIN_RSA_BITS = 2048;
+
     private final PrivateKey privateKey;
     private final PublicKey publicKey;
     private final long jwtExpirationMs;
@@ -31,15 +44,100 @@ public class JwtService {
     private final String jwtAudience;
 
     public JwtService(
+            @Value("${jwt.private-key-base64}") String privateKeyBase64,
             @Value("${jwt.private-key-path}") String privateKeyPath,
             @Value("${jwt.expiration-ms}") long jwtExpirationMs,
             @Value("${jwt.issuer}") String jwtIssuer,
             @Value("${jwt.audience}") String jwtAudience) {
-        this.privateKey = PemKeyLoader.loadPrivateKey(privateKeyPath);
+
+        // 1. Prioritize Base64 Environment Variable (for Railway / Cloud)
+        if (privateKeyBase64 != null && !privateKeyBase64.isBlank()) {
+            this.privateKey = parsePrivateKeyFromBase64(privateKeyBase64);
+        }
+        // 2. Fallback to File Path (for Local Docker Compose / IDE)
+        else if (privateKeyPath != null && !privateKeyPath.isBlank()) {
+            this.privateKey = PemKeyLoader.loadPrivateKey(privateKeyPath);
+        } else {
+            throw new IllegalArgumentException(
+                    "Neither 'jwt.private-key-base64' nor 'jwt.private-key-path' is configured.");
+        }
+
+        requireStrongRsaKey(this.privateKey);
         this.publicKey = PemKeyLoader.derivePublicKey(privateKey);
         this.jwtExpirationMs = jwtExpirationMs;
         this.jwtIssuer = jwtIssuer;
         this.jwtAudience = jwtAudience;
+    }
+
+    /**
+     * Accepts the key as an environment variable in either form people actually
+     * paste:
+     * the whole PEM file base64-encoded (line breaks tolerated), or the raw PEM
+     * (leading and trailing whitespace tolerated, and literal "\\n" sequences,
+     * which some platforms store instead of line breaks).
+     *
+     * Every failure message starts with KEY_ERROR and never contains any of the
+     * key.
+     */
+    private PrivateKey parsePrivateKeyFromBase64(String base64Input) {
+        String pemContent = decodeToPem(base64Input);
+        requirePkcs8(pemContent);
+        try {
+            String cleanKey = pemContent
+                    .replace("-----BEGIN PRIVATE KEY-----", "")
+                    .replace("-----END PRIVATE KEY-----", "")
+                    .replaceAll("\\s+", "");
+
+            byte[] keyBytes = Base64.getDecoder().decode(cleanKey);
+            return KeyFactory.getInstance("RSA").generatePrivate(new PKCS8EncodedKeySpec(keyBytes));
+        } catch (GeneralSecurityException | IllegalArgumentException ex) {
+            throw new IllegalArgumentException(KEY_ERROR, ex);
+        }
+    }
+
+    private static String decodeToPem(String input) {
+        String value = input.trim();
+        if (value.startsWith("-----BEGIN")) {
+            return value.replace("\\n", "\n");
+        }
+        try {
+            // The MIME decoder ignores the line breaks that `base64` adds by default
+            return new String(Base64.getMimeDecoder().decode(value), StandardCharsets.UTF_8);
+        } catch (IllegalArgumentException ex) {
+            throw new IllegalArgumentException(KEY_ERROR, ex);
+        }
+    }
+
+    /**
+     * Only an unencrypted PKCS#8 key ("BEGIN PRIVATE KEY") is accepted, as with the
+     * file loader.
+     */
+    private static void requirePkcs8(String pem) {
+        if (pem.contains("-----BEGIN PRIVATE KEY-----")) {
+            return;
+        }
+        Matcher label = PEM_LABEL.matcher(pem);
+        String detail;
+        if (label.find()) {
+            detail = "expected an unencrypted PKCS#8 key ('BEGIN PRIVATE KEY') but found '" + label.group(1) + "'";
+            if ("RSA PRIVATE KEY".equals(label.group(1))) {
+                detail += ". Convert it with: openssl pkcs8 -topk8 -nocrypt -in old.pem -out private.pem";
+            }
+        } else {
+            detail = "the value is neither a PEM private key nor a base64-encoded one";
+        }
+        throw new IllegalArgumentException(KEY_ERROR + ": " + detail);
+    }
+
+    /**
+     * jjwt refuses to sign RS256 with a smaller key, so fail at startup rather than
+     * on the first login.
+     */
+    private static void requireStrongRsaKey(PrivateKey key) {
+        if (!(key instanceof RSAKey rsa) || rsa.getModulus().bitLength() < MIN_RSA_BITS) {
+            throw new IllegalStateException(
+                    "The JWT private key must be an RSA key of at least " + MIN_RSA_BITS + " bits");
+        }
     }
 
     public String generateToken(String username, long userId, List<String> roles) {

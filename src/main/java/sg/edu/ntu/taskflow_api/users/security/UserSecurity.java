@@ -1,20 +1,21 @@
 package sg.edu.ntu.taskflow_api.users.security;
 
+import org.springframework.security.core.Authentication;
 import org.springframework.stereotype.Component;
 
-import sg.edu.ntu.taskflow_api.users.repository.UserRepository;
-
+/**
+ * Rules used from @PreAuthorize expressions as @userSecurity.
+ *
+ * The caller's id comes from the verified token (the "uid" claim), so there is
+ * no database lookup. It fails closed: no authentication, or an unexpected
+ * principal type, means "not self".
+ */
 @Component("userSecurity")
 public class UserSecurity {
-    private final UserRepository userRepository;
 
-    public UserSecurity(UserRepository userRepository) {
-        this.userRepository = userRepository;
-    }
-
-    public boolean isSelf(long id, String username) {
-        return userRepository.findById(id)
-                .map(u -> u.getUsername().equals(username))
-                .orElse(false);
+    public boolean isSelf(long id, Authentication authentication) {
+        return authentication != null
+                && authentication.getPrincipal() instanceof AuthenticatedUser user
+                && user.userId() == id;
     }
 }

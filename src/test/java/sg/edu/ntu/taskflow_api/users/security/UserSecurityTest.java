@@ -1,81 +1,63 @@
 package sg.edu.ntu.taskflow_api.users.security;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.Mockito.when;
 
-import java.util.Optional;
+import java.util.List;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.extension.ExtendWith;
-import org.mockito.InjectMocks;
-import org.mockito.Mock;
-import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
+import org.springframework.security.core.Authentication;
+import org.springframework.security.core.authority.SimpleGrantedAuthority;
 
-import sg.edu.ntu.taskflow_api.users.entity.User;
-import sg.edu.ntu.taskflow_api.users.entity.UserRole;
-import sg.edu.ntu.taskflow_api.users.repository.UserRepository;
-
-/**
- * Pure unit tests: no Spring context. UserRepository is mocked.
- *
- * isSelf takes a primitive long, so it calls the primitive findById(long)
- * overload; stubs below use long literals to match.
- */
-@ExtendWith(MockitoExtension.class)
+/** Pure unit tests: no Spring context and no repository. The id comes from the token. */
 class UserSecurityTest {
 
-    @Mock
-    private UserRepository userRepository;
+    private final UserSecurity userSecurity = new UserSecurity();
 
-    @InjectMocks
-    private UserSecurity userSecurity;
-
-    private User buildUser(long id, String username) {
-        User user = new User(username, "password1", "Test User", UserRole.USER);
-        user.setId(id);
-        return user;
+    private static Authentication caller(String username, long userId) {
+        return UsernamePasswordAuthenticationToken.authenticated(
+                new AuthenticatedUser(username, userId), null, List.of(new SimpleGrantedAuthority("ROLE_USER")));
     }
 
     @Test
-    @DisplayName("isSelf returns true when the username matches the stored user")
-    void isSelf_matchingUsername_returnsTrue() {
-        when(userRepository.findById(1L)).thenReturn(Optional.of(buildUser(1L, "alice01")));
-
-        assertThat(userSecurity.isSelf(1L, "alice01")).isTrue();
+    @DisplayName("isSelf returns true when the caller's id matches")
+    void isSelf_matchingId_returnsTrue() {
+        assertThat(userSecurity.isSelf(1L, caller("alice01", 1L))).isTrue();
     }
 
     @Test
-    @DisplayName("isSelf returns false when the username belongs to someone else")
-    void isSelf_differentUsername_returnsFalse() {
-        when(userRepository.findById(1L)).thenReturn(Optional.of(buildUser(1L, "alice01")));
-
-        assertThat(userSecurity.isSelf(1L, "bobby01")).isFalse();
+    @DisplayName("isSelf returns false when the id belongs to someone else")
+    void isSelf_differentId_returnsFalse() {
+        assertThat(userSecurity.isSelf(2L, caller("alice01", 1L))).isFalse();
     }
 
     @Test
-    @DisplayName("isSelf returns false when the user does not exist")
-    void isSelf_missingUser_returnsFalse() {
-        when(userRepository.findById(99L)).thenReturn(Optional.empty());
-
-        assertThat(userSecurity.isSelf(99L, "alice01")).isFalse();
+    @DisplayName("isSelf compares ids, not usernames: the same username with another id is not self")
+    void isSelf_sameUsernameDifferentId_returnsFalse() {
+        assertThat(userSecurity.isSelf(99L, caller("alice01", 1L))).isFalse();
     }
 
     @Test
-    @DisplayName("isSelf returns false when the caller's username is null")
-    void isSelf_nullUsername_returnsFalse() {
-        when(userRepository.findById(1L)).thenReturn(Optional.of(buildUser(1L, "alice01")));
-
+    @DisplayName("isSelf returns false when there is no authentication")
+    void isSelf_nullAuthentication_returnsFalse() {
         assertThat(userSecurity.isSelf(1L, null)).isFalse();
     }
 
     @Test
-    @DisplayName("isSelf compares usernames case-sensitively")
-    void isSelf_differentCase_returnsFalse() {
-        // Stored usernames are lowercase, so a token carrying "Alice01" is not treated
-        // as the same user.
-        when(userRepository.findById(1L)).thenReturn(Optional.of(buildUser(1L, "alice01")));
+    @DisplayName("isSelf fails closed for an unexpected principal type")
+    void isSelf_unexpectedPrincipal_returnsFalse() {
+        Authentication stringPrincipal = UsernamePasswordAuthenticationToken.authenticated(
+                "alice01", null, List.of(new SimpleGrantedAuthority("ROLE_USER")));
 
-        assertThat(userSecurity.isSelf(1L, "Alice01")).isFalse();
+        assertThat(userSecurity.isSelf(1L, stringPrincipal)).isFalse();
+    }
+
+    @Test
+    @DisplayName("isSelf works for very large ids")
+    void isSelf_largeId_returnsTrue() {
+        long big = 5_000_000_000L;
+
+        assertThat(userSecurity.isSelf(big, caller("alice01", big))).isTrue();
     }
 }

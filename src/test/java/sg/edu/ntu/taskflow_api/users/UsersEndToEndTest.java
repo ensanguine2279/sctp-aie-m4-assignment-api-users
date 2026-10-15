@@ -265,7 +265,7 @@ class UsersEndToEndTest {
         @Test
         @DisplayName("a token signed with a different private key is rejected")
         void forgedToken_returns401() throws Exception {
-                String forged = new JwtService(OTHER_KEY_FILE.toString(), EXPIRATION_MS, ISSUER, AUDIENCE)
+                String forged = new JwtService(null,OTHER_KEY_FILE.toString(), EXPIRATION_MS, ISSUER, AUDIENCE)
                                 .generateToken("admin01", ANY_UID, List.of("ROLE_ADMIN"));
 
                 mockMvc.perform(get("/api/users").header(HttpHeaders.AUTHORIZATION, bearer(forged)))
@@ -278,7 +278,7 @@ class UsersEndToEndTest {
         void expiredToken_returns401() throws Exception {
                 // The parser allows 30s of clock skew, so the token must expire well beyond
                 // that.
-                String expired = new JwtService(SIGNING_KEY_FILE.toString(), -120_000L, ISSUER, AUDIENCE)
+                String expired = new JwtService(null, SIGNING_KEY_FILE.toString(), -120_000L, ISSUER, AUDIENCE)
                                 .generateToken("admin01", ANY_UID, List.of("ROLE_ADMIN"));
 
                 mockMvc.perform(get("/api/users").header(HttpHeaders.AUTHORIZATION, bearer(expired)))
@@ -289,10 +289,10 @@ class UsersEndToEndTest {
         @Test
         @DisplayName("a correctly signed token with the wrong issuer or audience is rejected")
         void wrongIssuerOrAudience_returns401() throws Exception {
-                String wrongIssuer = new JwtService(SIGNING_KEY_FILE.toString(), EXPIRATION_MS, "someone-else",
+                String wrongIssuer = new JwtService(null, SIGNING_KEY_FILE.toString(), EXPIRATION_MS, "someone-else",
                                 AUDIENCE)
                                 .generateToken("admin01", ANY_UID, List.of("ROLE_ADMIN"));
-                String wrongAudience = new JwtService(SIGNING_KEY_FILE.toString(), EXPIRATION_MS, ISSUER, "another-api")
+                String wrongAudience = new JwtService(null, SIGNING_KEY_FILE.toString(), EXPIRATION_MS, ISSUER, "another-api")
                                 .generateToken("admin01", ANY_UID, List.of("ROLE_ADMIN"));
 
                 mockMvc.perform(get("/api/users").header(HttpHeaders.AUTHORIZATION, bearer(wrongIssuer)))

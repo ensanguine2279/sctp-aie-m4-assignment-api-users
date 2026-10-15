@@ -22,10 +22,15 @@ final class TestJwtKeys {
     static final Path SIGNING_KEY_FILE = writePrivatePem(SIGNING_KEYS);
     static final Path OTHER_KEY_FILE = writePrivatePem(OTHER_KEYS);
 
-    private TestJwtKeys() {}
+    private TestJwtKeys() {
+    }
 
     static void register(DynamicPropertyRegistry registry) {
         registry.add("jwt.private-key-path", () -> SIGNING_KEY_FILE.toString());
+        // The base64 key wins over the path. Without this line, a
+        // JWT_PRIVATE_KEY_BASE64 exported in the developer's shell (for example while
+        // trying out a Railway deployment) would silently replace the test key.
+        registry.add("jwt.private-key-base64", () -> "");
         registry.add("jwt.issuer", () -> ISSUER);
         registry.add("jwt.audience", () -> AUDIENCE);
         registry.add("jwt.expiration-ms", () -> "3600000");
