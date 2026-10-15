@@ -72,14 +72,25 @@ jobs:
     needs: test
 
     steps:
+      # fetch-depth: 0 is required so the versioning action can read Git tags/history
       - name: Checkout code
         uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
 
       - name: Get JAR from the build job
         uses: actions/download-artifact@v8
         with:
           name: app-jar
           path: target
+
+      - name: Calculate SemVer
+        id: version
+        uses: paulhatch/semantic-version@v5.4.0
+        with:
+          tag_prefix: "v"
+          major_pattern: "(MAJOR)"
+          minor_pattern: "feat:"
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -95,6 +106,8 @@ jobs:
         with:
           context: .
           push: true
-          tags: ${{ secrets.DOCKER_USERNAME }}/user-service:latest
+          tags: | 
+            ${{ secrets.DOCKER_USERNAME }}/user-service:${{ steps.version.outputs.version }}
+            ${{ secrets.DOCKER_USERNAME }}/user-service:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
