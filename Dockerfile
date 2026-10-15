@@ -18,6 +18,10 @@ RUN ./mvnw clean package -DskipTests
 # Stage 2: Runtime Container
 # ==========================================
 FROM eclipse-temurin:21-jre-alpine
+
+# Install curl (required for the healthcheck command if using Alpine)
+RUN apk add --no-cache curl
+
 WORKDIR /app
 
 # Run as a non-root user for security compliance
@@ -29,6 +33,12 @@ COPY --from=builder /app/target/*.jar app.jar
 
 # Expose User Service port
 EXPOSE 8022
+
+# HEALTHCHECK instruction it tells Docker how to test if a running container is actually 
+# functional and ready to handle traffic, rather than just checking if its main process 
+# is still alive.
+HEALTHCHECK --interval=30s --timeout=3s --start-period=40s --retries=3 \
+  CMD curl -f http://localhost:8022/actuator/health || exit 1
 
 # Configure JVM flags for container resource limits and run
 ENTRYPOINT ["java", "-XX:+UseG1GC", "-XX:MaxRAMPercentage=75.0", "-jar", "app.jar"]
