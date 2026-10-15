@@ -60,6 +60,7 @@ public class SecurityConfig {
                                                 .requestMatchers("/auth/login").permitAll()
                                                 .requestMatchers("/actuator/health", "/actuator/health/**").permitAll()
                                                 .anyRequest().authenticated())
+                                                
 
                                 // Register JWT filter to run before username/password authentication
                                 .addFilterBefore(new JwtAuthFilter(jwtService),
