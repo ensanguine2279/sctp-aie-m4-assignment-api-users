@@ -58,6 +58,7 @@ public class SecurityConfig {
                                 // /auth/login is public; everything else needs a valid token
                                 .authorizeHttpRequests(auth -> auth
                                                 .requestMatchers("/auth/login").permitAll()
+                                                .requestMatchers("/actuator/health", "/actuator/health/**").permitAll()
                                                 .anyRequest().authenticated())
 
                                 // Register JWT filter to run before username/password authentication
