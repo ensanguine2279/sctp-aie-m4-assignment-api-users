@@ -28,9 +28,36 @@ final class TestJwtKeys {
     static void register(DynamicPropertyRegistry registry) {
         registry.add("jwt.private-key-path", () -> SIGNING_KEY_FILE.toString());
         // The base64 key wins over the path. Without this line, a
-        // JWT_PRIVATE_KEY_BASE64 exported in the developer's shell (for example while
-        // trying out a Railway deployment) would silently replace the test key.
+        // JWT_PRIVATE_KEY_BASE64 exported in the
+        // developer's shell (for example while trying out a Railway deployment) would
+        // silently replace the test key.
         registry.add("jwt.private-key-base64", () -> "");
+        registry.add("jwt.issuer", () -> ISSUER);
+        registry.add("jwt.audience", () -> AUDIENCE);
+        registry.add("jwt.expiration-ms", () -> "3600000");
+    }
+
+    /**
+     * The signing private key PEM, base64-encoded on one line: what you would put
+     * in JWT_PRIVATE_KEY_BASE64.
+     */
+    static String signingKeyAsBase64() {
+        try {
+            return Base64.getEncoder().encodeToString(Files.readAllBytes(SIGNING_KEY_FILE));
+        } catch (IOException ex) {
+            throw new IllegalStateException("Could not read the test private key", ex);
+        }
+    }
+
+    /**
+     * Like register(...), but the signing key arrives as jwt.private-key-base64, as
+     * on Railway.
+     * pathValue is what jwt.private-key-path gets: "" for no file at all, or a path
+     * to prove precedence.
+     */
+    static void registerWithBase64Key(DynamicPropertyRegistry registry, String pathValue) {
+        registry.add("jwt.private-key-base64", TestJwtKeys::signingKeyAsBase64);
+        registry.add("jwt.private-key-path", () -> pathValue);
         registry.add("jwt.issuer", () -> ISSUER);
         registry.add("jwt.audience", () -> AUDIENCE);
         registry.add("jwt.expiration-ms", () -> "3600000");

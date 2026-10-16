@@ -16,7 +16,16 @@
 #   SERVICE_NAME        compose service name, default user-service
 #   WAIT_SECS           how long to wait for the service to answer, default 120
 #
-# Needs: bash, curl, openssl, base64, od. Exit code is 0 only if every check passes.
+# Needs: bash, curl, openssl, base64, od. Exit code is 0 only if every check passes
+#
+# Against a deployed service (for example Railway):
+#   BASE_URL=https://your-service.up.railway.app ADMIN_USERNAME=... ADMIN_PASSWORD=... \
+#   PUBLIC_KEY_FILE=/path/to/production-public.pem JWT_ISSUER=... JWT_AUDIENCE=... WAIT_SECS=240 \
+#   ./smoke-test.sh
+# - --up and --restart control a LOCAL docker compose stack, so they are refused for a non-local BASE_URL.
+# - The checks that sign tokens with the real private key run only if PRIVATE_KEY_FILE exists. Do not point it at
+#   your development key when testing production: it is a different key, so those checks would fail.
+# - The run creates one throwaway user and deletes it again.
 #
 # Assumptions about the API (taken from UsersEndToEndTest): POST /auth/login returns
 # {"token": ...}; POST /api/users takes username/password/name/role and returns an "id";
@@ -41,6 +50,11 @@ BODY=""
 TMP=""
 CREATED_ID=""
 ADMIN_TOKEN=""
+
+# is_local_url URL -> exit 0 for localhost, 127.0.0.1 and [::1]
+is_local_url() {
+    [[ $1 =~ ^https?://(localhost|127\.0\.0\.1|\[::1\])([:/]|$) ]]
+}
 
 # ---------- output helpers ----------
 
@@ -231,7 +245,7 @@ check_keys() {
         if verify_rs256 "$ADMIN_TOKEN" "$PUBLIC_KEY_FILE"; then
             ok "signature verifies against $PUBLIC_KEY_FILE"
         else
-            bad "signature verifies against $PUBLIC_KEY_FILE" "the service is signing with a key that does not pair with this public key"
+            bad "signature verifies against $PUBLIC_KEY_FILE" "the service is signing with a key that does not pair with this public key (for a deployed service, PUBLIC_KEY_FILE must be its production public key)"
         fi
     else
         skip "signature check (no public key at $PUBLIC_KEY_FILE)"
@@ -383,10 +397,16 @@ main() {
         case $arg in
             --up) do_up=1 ;;
             --restart) do_restart=1 ;;
-            -h|--help) sed -n '2,24p' "$0"; return 0 ;;
+            -h|--help) awk 'NR > 1 && /^#/ { print; next } NR > 1 { exit }' "$0"; return 0 ;;
             *) echo "Unknown option: $arg (try --help)" >&2; return 2 ;;
         esac
     done
+
+    if (( do_up || do_restart )) && ! is_local_url "$BASE_URL"; then
+        echo "--up and --restart manage the local docker compose stack, but BASE_URL is $BASE_URL." >&2
+        echo "Run without them against a deployed service, and redeploy from the platform if you want a restart check." >&2
+        return 2
+    fi
 
     for tool in curl openssl base64 od; do
         command -v "$tool" > /dev/null || { echo "Missing required tool: $tool" >&2; return 2; }
