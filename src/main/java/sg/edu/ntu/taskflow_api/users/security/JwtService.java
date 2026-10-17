@@ -1,5 +1,8 @@
 package sg.edu.ntu.taskflow_api.users.security;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import java.nio.charset.StandardCharsets;
 
 import java.security.GeneralSecurityException;
@@ -33,6 +36,8 @@ import sg.edu.ntu.taskflow_api.users.exception.InvalidTokenException.Reason;
 @Service
 public class JwtService {
 
+    private static final Logger logger = LoggerFactory.getLogger(JwtService.class);
+
     private static final String KEY_ERROR = "Failed to load JWT private key from Base64 environment variable";
     private static final Pattern PEM_LABEL = Pattern.compile("-----BEGIN ([A-Z0-9 ]+)-----");
     private static final int MIN_RSA_BITS = 2048;
@@ -50,12 +55,16 @@ public class JwtService {
             @Value("${jwt.issuer}") String jwtIssuer,
             @Value("${jwt.audience}") String jwtAudience) {
 
+        logger.info("Initializing JwtService with privateKeyBase64: {}, privateKeyPath: {}", 
+        privateKeyBase64,privateKeyPath);
+
         // 1. Prioritize Base64 Environment Variable (for Railway / Cloud)
         if (privateKeyBase64 != null && !privateKeyBase64.isBlank()) {
             this.privateKey = parsePrivateKeyFromBase64(privateKeyBase64);
         }
         // 2. Fallback to File Path (for Local Docker Compose / IDE)
         else if (privateKeyPath != null && !privateKeyPath.isBlank()) {
+            // logger.info("Loading private key from path: {}", privateKeyPath);
             this.privateKey = PemKeyLoader.loadPrivateKey(privateKeyPath);
         } else {
             throw new IllegalArgumentException(

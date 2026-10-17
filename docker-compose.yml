@@ -28,7 +28,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: ensanguine/user-service:1.0.0
+    image: ensanguine/user-service:latest
     container_name: user-service
     user: "${LOCAL_UID:-1000}:${LOCAL_GID:-1000}" # Ensures the container runs with the same UID and GID as the host user
     ports:

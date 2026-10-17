@@ -20,7 +20,7 @@ graph TD
     end
 
     APP -- "1. Healthcheck dependency" --> DB
-    DB_TOOL -- "Port 5432:5432" --> DB
+    DB_TOOL -- "Port 5422:5432" --> DB
     REST_TOOL -- "Port 8022:8022" --> APP
     KEY -- "read-only secret at<br/>/run/secrets/jwt_private_key" --> APP
 
@@ -45,7 +45,11 @@ Create a `.env` file in the same root directory as the `docker-compose.yml` file
 
 ```bash
 # Database Settings
-DB_PORT_ENV=5432
+# The app reaches the database by its compose service name (Docker DNS), never localhost.
+DB_HOST_ENV=user-db
+# Host port only. The container still listens on 5432 inside the network.
+# 5422 avoids a clash with a local Postgres on 5432.
+DB_PORT_ENV=5422
 DB_NAME_ENV=userdb
 DB_USER_ENV=postgres
 DB_PASSWORD_ENV=postgrespassword
@@ -72,7 +76,18 @@ ADMIN_USERNAME_ENV=admin01
 ADMIN_PASSWORD_ENV=abcd1234
 ```
 
-The private key itself never goes in `.env`. Only its host path can (`JWT_PRIVATE_KEY_FILE`). The old `JWT_SECRET_ENV` is no longer used and should be deleted.
+The private key itself never goes in `.env`. Only its host path can (`JWT_PRIVATE_KEY_FILE`). The old `JWT_SECRET_ENV` is no longer used and should be deleted. Do not set `JWT_PRIVATE_KEY_BASE64` here either: that variable is for platforms without file mounts, and it wins over the mounted key.
+
+### Database host and port: which values, where
+
+The same two settings take different values depending on where the application runs. `DB_PORT_ENV` is only the port **published on your machine**. The app inside the network always uses 5432, so do not feed `DB_PORT_ENV` into the app's `DB_PORT`.
+
+| Where the app runs | Database host | Database port |
+|---|---|---|
+| In Docker Compose (the app container) | `user-db` (`DB_HOST_ENV`) | `5432`, fixed |
+| `mvn` on your machine, against the compose database | `localhost` | the published port, `DB_PORT_ENV` (5422) |
+| DBeaver or other tools on your machine | `localhost` | the published port, `DB_PORT_ENV` (5422) |
+| A platform such as Railway | the platform's database host variable | the platform's database port variable |
 
 ## `user-db` Service
 
@@ -86,7 +101,7 @@ The private key itself never goes in `.env`. Only its host path can (`JWT_PRIVAT
 
 1. build & image: Compiles the source using the local Dockerfile and tags the generated image as `ensanguine/user-service:1.0.0`.
 
-2. environment: Overrides `application.properties` default values dynamically at container runtime. Notice that `DB_HOST=user-db` uses the internal Docker DNS name of the database service instead of localhost. The JWT settings work the same way: `JWT_ISSUER` and `JWT_AUDIENCE` are written into every token and checked when one is validated. `JWT_PRIVATE_KEY_PATH` is only a **path**, set to the fixed location inside the container where the secret is mounted. The key's contents are never an environment variable.
+2. environment: Overrides `application.properties` default values dynamically at container runtime. `DB_HOST` comes from `DB_HOST_ENV`, which must be `user-db`: the internal Docker DNS name of the database service, not localhost (inside the app container, localhost is the app itself). Writing it as `${DB_HOST_ENV:-user-db}` in the compose file makes the local setup work even if the variable is missing from `.env`. The JWT settings work the same way: `JWT_ISSUER` and `JWT_AUDIENCE` are written into every token and checked when one is validated. Under Compose, `JWT_PRIVATE_KEY_PATH` is only a **path**, set to the fixed location inside the container where the secret is mounted, so the key's contents are not an environment variable. Platforms that cannot mount files (for example Railway) use `JWT_PRIVATE_KEY_BASE64` instead: see `README-authentication.md`.
 
 3. user: `"${LOCAL_UID:-1000}:${LOCAL_GID:-1000}"` runs the container as your host user's numeric ID, replacing the `spring` user from the Dockerfile. The mounted key keeps the owner and permissions of the host file, so a key with mode `600` owned by you can only be read by a process running as you. If your IDs are not 1000, set `LOCAL_UID` and `LOCAL_GID` in `.env`. The alternative is `chmod 644` on a dev-only key.
 
@@ -184,7 +199,7 @@ docker compose logs -f user-service
 Connect your host machine's SQL clients to the exposed PostgreSQL port:
 
 Host: localhost
-Port: 5432
+Port: 5422 (or the value of `${DB_PORT_ENV}`)
 Database: `userdb` (or value of `${DB_NAME_ENV}`)
 User/Password: Credentials declared in `.env`
 
@@ -196,7 +211,9 @@ Run this from the project root, on the host (it reads `.env` and your key files)
 ./smoke-test.sh --up --restart
 ```
 
-It rebuilds the stack, logs in, checks the token (RS256, issuer, audience, roles, expiry), verifies the signature against `public.pem`, confirms that tampered, unsigned and HS256 tokens are rejected, checks the role rules, and finally restarts `user-service` to confirm earlier tokens still work. It exits non-zero if any check fails.
+It rebuilds the stack, logs in, checks the token (RS256, issuer, audience, roles, the numeric `uid`, expiry), verifies the signature against `public.pem`, confirms that tampered, unsigned, HS256 and wrong-`uid` tokens are rejected, checks the role rules and that a new user's token carries their own id, and finally restarts `user-service` to confirm earlier tokens still work. It exits non-zero if any check fails.
+
+`--up` and `--restart` manage this local stack, so they are refused when `BASE_URL` points at a deployed service. The script can still be run against one without them: see `README-authentication.md`.
 
 ### 7. Cleanup & Maintenance Operations
 
@@ -220,5 +237,6 @@ docker compose down -v
 | `docker compose up` fails before starting, naming the secret file | The key does not exist at the host path. Run `docker compose config` to see the resolved path, then create the key or set `JWT_PRIVATE_KEY_FILE`. |
 | `Could not load private key ... NoSuchFileException` | The secret is not mounted into the service, or `JWT_PRIVATE_KEY_PATH` is not `/run/secrets/jwt_private_key`. |
 | No response on `localhost:8022` | `APP_PORT_ENV` is missing or inconsistent. Look for `Tomcat started on port ...` in `docker compose logs user-service`. |
-| `Unable to determine Dialect without JDBC metadata` | The application cannot reach the database. Check that `user-db` is healthy and the `DB_*` values match. |
+| `Unable to determine Dialect without JDBC metadata` | The application cannot reach the database. Check that `user-db` is healthy and the `DB_*` values match. Inside Compose the host must be `user-db` (`DB_HOST_ENV`) and the port 5432, not `localhost` or the published port. |
+| `Bind for 0.0.0.0:5422 failed: port is already allocated` | Something else uses the published database port. Change `DB_PORT_ENV` (and only that). The `5432` inside the network never changes. |
 | Every token rejected with 401 after a change | The issuer or audience differs between this service and the one validating tokens. |

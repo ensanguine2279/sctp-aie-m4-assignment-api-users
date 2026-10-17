@@ -29,10 +29,10 @@ public class DataLoader {
                 userRepository.deleteAll();
 
                 // Load sample users
-                User user1 = new User("alice01", passwordEncoder.encode("abcd1234"), "Alice", UserRole.ADMIN);
-                User user2 = new User("bob001", passwordEncoder.encode("abcd1234"), "Bob", UserRole.MANAGER);
-                User user3 = new User("charlie", passwordEncoder.encode("abcd1234"), "Charlie", UserRole.USER);
-                User user4 = new User("david01", passwordEncoder.encode("abcd1234"), "David", UserRole.USER);
+                User user1 = new User("alice01", passwordEncoder.encode("abcd1234"), "Alice Ang", UserRole.USER);
+                User user2 = new User("benny01", passwordEncoder.encode("abcd1234"), "Benny Boh", UserRole.MANAGER);
+                User user3 = new User("charlie", passwordEncoder.encode("abcd1234"), "Charlie Chee", UserRole.MANAGER);
+                User user4 = new User("donald", passwordEncoder.encode("abcd1234"), "Donald Du", UserRole.USER);
 
                 List<User> users = List.of(user1, user2, user3, user4);
                 users.forEach(userRepository::save);

@@ -68,7 +68,7 @@ As `root`: The attacker gains full privileges inside the container, making it ea
 
 As `spring` (Non-Root): The process is constrained by Least Privilege. The attacker cannot modify system binaries, install software packages, or access protected OS files inside the container.
 
-**Note on the mounted key:** the application reads its RSA private key from a file mounted at runtime. That file keeps the owner and permissions of the host file, so a key with mode `600` owned by your host user cannot be read by the `spring` user, and startup fails with `AccessDeniedException`. For local development, `docker-compose.yml` therefore overrides the user with `user: "${LOCAL_UID:-1000}:${LOCAL_GID:-1000}"`, which runs the container as your host user's numeric ID. The container is still non-root. In a real deployment, mount the key from a secret store and give it ownership that matches the container user, rather than loosening permissions.
+**Note on the mounted key:** the application reads its RSA private key from a file mounted at runtime. That file keeps the owner and permissions of the host file, so a key with mode `600` owned by your host user cannot be read by the `spring` user, and startup fails with `AccessDeniedException`. For local development, `docker-compose.yml` therefore overrides the user with `user: "${LOCAL_UID:-1000}:${LOCAL_GID:-1000}"`, which runs the container as your host user's numeric ID. The container is still non-root. In a real deployment, mount the key from a secret store and give it ownership that matches the container user, rather than loosening permissions. On a platform that cannot mount files, pass the key as the `JWT_PRIVATE_KEY_BASE64` environment variable instead (see below): then there is no file to read, and no permissions to fix.
 
 
 ```bash
@@ -101,7 +101,7 @@ Shell Form (`ENTRYPOINT java -jar app.jar`): Spawns `/bin/sh -c as PID 1`, wrapp
 
 ### Keys are not part of the image
 
-Nothing in this Dockerfile copies a key. The build stage copies only `.mvn/`, `mvnw`, `pom.xml` and `src`, and the runtime stage copies only the built JAR. The private key reaches the container at runtime as a mounted read-only file (`/run/secrets/jwt_private_key` under Compose), so the image can be pushed and shared without exposing anything. As a safety net against a key ending up in the build context by accident, add a `.dockerignore` next to the Dockerfile:
+Nothing in this Dockerfile copies a key. The build stage copies only `.mvn/`, `mvnw`, `pom.xml` and `src`, and the runtime stage copies only the built JAR. The private key reaches the container at runtime as a mounted read-only file (`/run/secrets/jwt_private_key` under Compose), so the image can be pushed and shared without exposing anything. On a platform without file mounts the key arrives the same way, at run time, as the `JWT_PRIVATE_KEY_BASE64` environment variable. It must never be an `ENV` or `ARG` in the Dockerfile, because that would store it in the image layers. As a safety net against a key ending up in the build context by accident, add a `.dockerignore` next to the Dockerfile:
 
 ```
 *.pem
@@ -160,6 +160,25 @@ docker run --rm -p 8022:8022 \
 
 - `--user "$(id -u):$(id -g)"`: Runs the container as your host user so it can read a key with mode `600`. Without it, the `spring` user from the Dockerfile cannot read the file.
 
+### Running with the key as a variable (no file mount)
+
+The same image runs on a platform that only offers environment variables. Pass the whole key file, base64-encoded on one line, and leave out the mount and the `--user` option, because there is no file to read:
+
+```bash
+docker run --rm -p 8022:8022 \
+  -e DB_HOST=localhost \
+  -e DB_PORT=5432 \
+  -e DB_NAME=userdb \
+  -e DB_USER=postgres \
+  -e DB_PASSWORD=postgres \
+  -e JWT_PRIVATE_KEY_BASE64="$(base64 -w0 "$HOME/.taskflow/keys/private.pem")" \
+  user-service:test
+```
+
+- `JWT_PRIVATE_KEY_BASE64` wins over `JWT_PRIVATE_KEY_PATH` if both are set, and a broken value stops the app at startup. It never falls back to the path.
+- On macOS, use `base64 -i private.pem | tr -d '\n'` in place of `base64 -w0`.
+- A platform runs the image with its own database and port. Set `DB_*` to the platform's values and `APP_PORT` to the port the platform expects (Railway sets `PORT`). The `ENTRYPOINT` needs no wrapper script: the application reads the variable itself.
+
 ### What Will Happen
 
 1. Spring Boot Boots Up: The JRE will initialize with the JVM flags specified in your Dockerfile, read the passed -e environment variables, and start the application context.
@@ -172,4 +191,4 @@ docker run --rm -p 8022:8022 \
 
 ### Checking the key
 
-The private key is loaded when `JwtService` is created. If the mounted key is missing or unreadable, the log shows `Could not load private key from /run/secrets/jwt_private_key`, followed by the cause (`NoSuchFileException` or `AccessDeniedException`). Depending on the order in which Spring creates its beans, the database connection error above may appear first. To check key loading end to end, use the Compose setup instead, which starts a real database.
+The private key is loaded when `JwtService` is created. If the mounted key is missing or unreadable, the log shows `Could not load private key from /run/secrets/jwt_private_key`, followed by the cause (`NoSuchFileException` or `AccessDeniedException`). When the key comes from `JWT_PRIVATE_KEY_BASE64`, a problem shows as `Failed to load JWT private key from Base64 environment variable`, with a reason such as the wrong key type, and a key smaller than 2048 bits stops startup with a message saying so. If neither the variable nor the path is set, the message starts `Neither 'jwt.private-key-base64' nor 'jwt.private-key-path'`. None of these messages contains the key. Depending on the order in which Spring creates its beans, the database connection error above may appear first. To check key loading end to end, use the Compose setup instead, which starts a real database.

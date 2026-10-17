@@ -1,5 +1,8 @@
 package sg.edu.ntu.taskflow_api.users.security;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.io.IOException;
@@ -14,6 +17,8 @@ import java.security.spec.X509EncodedKeySpec;
 import java.util.Base64;
 
 public final class PemKeyLoader {
+
+    private static final Logger logger = LoggerFactory.getLogger(PemKeyLoader.class);
 
     public enum KeyType {
         PRIVATE("PRIVATE KEY"),
@@ -34,6 +39,7 @@ public final class PemKeyLoader {
     }
 
     public static PrivateKey loadPrivateKey(String path) {
+        // logger.info("Loading private key from path: {}", path);
         try {
             byte[] der = decodePem(Files.readString(Path.of(path)), KeyType.PRIVATE.getLabel());
             return KeyFactory.getInstance("RSA").generatePrivate(new PKCS8EncodedKeySpec(der));
