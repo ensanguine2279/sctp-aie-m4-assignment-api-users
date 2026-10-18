@@ -265,7 +265,7 @@ class UsersEndToEndTest {
         @Test
         @DisplayName("a token signed with a different private key is rejected")
         void forgedToken_returns401() throws Exception {
-                String forged = new JwtService(null,OTHER_KEY_FILE.toString(), EXPIRATION_MS, ISSUER, AUDIENCE)
+                String forged = new JwtService(null, OTHER_KEY_FILE.toString(), EXPIRATION_MS, ISSUER, AUDIENCE)
                                 .generateToken("admin01", ANY_UID, List.of("ROLE_ADMIN"));
 
                 mockMvc.perform(get("/api/users").header(HttpHeaders.AUTHORIZATION, bearer(forged)))
@@ -292,7 +292,8 @@ class UsersEndToEndTest {
                 String wrongIssuer = new JwtService(null, SIGNING_KEY_FILE.toString(), EXPIRATION_MS, "someone-else",
                                 AUDIENCE)
                                 .generateToken("admin01", ANY_UID, List.of("ROLE_ADMIN"));
-                String wrongAudience = new JwtService(null, SIGNING_KEY_FILE.toString(), EXPIRATION_MS, ISSUER, "another-api")
+                String wrongAudience = new JwtService(null, SIGNING_KEY_FILE.toString(), EXPIRATION_MS, ISSUER,
+                                "another-api")
                                 .generateToken("admin01", ANY_UID, List.of("ROLE_ADMIN"));
 
                 mockMvc.perform(get("/api/users").header(HttpHeaders.AUTHORIZATION, bearer(wrongIssuer)))

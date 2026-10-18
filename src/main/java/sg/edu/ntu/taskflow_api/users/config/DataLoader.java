@@ -12,7 +12,7 @@ import sg.edu.ntu.taskflow_api.users.entity.User;
 import sg.edu.ntu.taskflow_api.users.entity.UserRole;
 import sg.edu.ntu.taskflow_api.users.repository.UserRepository;
 
-@Profile("dev")
+//@Profile("dev")
 @Component
 public class DataLoader {
         private final UserRepository userRepository;
