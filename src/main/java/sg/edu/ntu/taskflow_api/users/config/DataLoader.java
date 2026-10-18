@@ -29,12 +29,13 @@ public class DataLoader {
                 userRepository.deleteAll();
 
                 // Load sample users
-                User user1 = new User("alice01", passwordEncoder.encode("abcd1234"), "Alice Ang", UserRole.USER);
-                User user2 = new User("benny01", passwordEncoder.encode("abcd1234"), "Benny Boh", UserRole.MANAGER);
-                User user3 = new User("charlie", passwordEncoder.encode("abcd1234"), "Charlie Chee", UserRole.MANAGER);
-                User user4 = new User("donald", passwordEncoder.encode("abcd1234"), "Donald Du", UserRole.USER);
+                User user1 = new User("admin01", passwordEncoder.encode("abcd1234"), "Administrator", UserRole.ADMIN);
+                User user2 = new User("alice01", passwordEncoder.encode("abcd1234"), "Alice Ang", UserRole.USER);
+                User user3 = new User("benny01", passwordEncoder.encode("abcd1234"), "Benny Boh", UserRole.MANAGER);
+                User user4 = new User("charlie", passwordEncoder.encode("abcd1234"), "Charlie Chee", UserRole.MANAGER);
+                User user5 = new User("donald", passwordEncoder.encode("abcd1234"), "Donald Du", UserRole.USER);
 
-                List<User> users = List.of(user1, user2, user3, user4);
+                List<User> users = List.of(user1, user2, user3, user4, user5);
                 users.forEach(userRepository::save);
         }
 }

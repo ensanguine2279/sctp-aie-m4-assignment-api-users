@@ -55,8 +55,8 @@ public class JwtService {
             @Value("${jwt.issuer}") String jwtIssuer,
             @Value("${jwt.audience}") String jwtAudience) {
 
-        logger.info("Initializing JwtService with privateKeyBase64: {}, privateKeyPath: {}", 
-        privateKeyBase64,privateKeyPath);
+        // logger.info("Initializing JwtService with privateKeyBase64: {},
+        // privateKeyPath: {}", privateKeyBase64,privateKeyPath);
 
         // 1. Prioritize Base64 Environment Variable (for Railway / Cloud)
         if (privateKeyBase64 != null && !privateKeyBase64.isBlank()) {
