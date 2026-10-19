@@ -529,7 +529,7 @@ class UserControllerTest {
         @Test
         @DisplayName("an unsupported HTTP method returns 405, not 500")
         void unsupportedMethod_asAdmin_returns405() throws Exception {
-                mockMvc.perform(patch("/api/users/1").header(HttpHeaders.AUTHORIZATION, ADMIN))
+                mockMvc.perform(post("/api/users/1").header(HttpHeaders.AUTHORIZATION, ADMIN))
                                 .andExpect(status().isMethodNotAllowed())
                                 .andExpect(jsonPath("$.message").value("Method Not Allowed"));
         }
