@@ -6,7 +6,6 @@ import org.springframework.web.bind.annotation.RestController;
 
 import jakarta.validation.Valid;
 
-import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
@@ -14,9 +13,13 @@ import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.PatchMapping;
+import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 
+import sg.edu.ntu.taskflow_api.users.dto.UpdatePasswordRequestDto;
+import sg.edu.ntu.taskflow_api.users.dto.UpdateUserRequestDto;
 import sg.edu.ntu.taskflow_api.users.entity.User;
 import sg.edu.ntu.taskflow_api.users.service.UserService;
 
@@ -53,6 +56,23 @@ public class UserController {
     public ResponseEntity<User> updateUser(@PathVariable long id, @Valid @RequestBody User user) {
         User updatedUser = userService.updateUser(id, user);
         return ResponseEntity.ok(updatedUser);
+    }
+
+    @PatchMapping("/{id}")
+    @PreAuthorize("hasRole('ADMIN')")
+    public ResponseEntity<User> updateUser(@PathVariable long id,
+            @Valid @RequestBody UpdateUserRequestDto updateUserRequestDto) {
+        User updatedUser = userService.updateUser(
+                id, updateUserRequestDto.username(), updateUserRequestDto.name(), updateUserRequestDto.role());
+        return ResponseEntity.ok(updatedUser);
+    }
+
+    @PatchMapping("/{id}/password")
+    @PreAuthorize("hasRole('ADMIN') or @userSecurity.isSelf(#id, authentication)")
+    public ResponseEntity<User> updatePassword(@PathVariable long id,
+            @Valid @RequestBody UpdatePasswordRequestDto updatePasswordRequestDto) {
+        userService.updatePassword(id, updatePasswordRequestDto.password());
+        return ResponseEntity.noContent().build();
     }
 
     @DeleteMapping("/{id}")

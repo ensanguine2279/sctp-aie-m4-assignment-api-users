@@ -7,6 +7,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.security.crypto.password.PasswordEncoder;
 
 import sg.edu.ntu.taskflow_api.users.entity.User;
+import sg.edu.ntu.taskflow_api.users.entity.UserRole;
 import sg.edu.ntu.taskflow_api.users.exception.UserNotFoundException;
 import sg.edu.ntu.taskflow_api.users.exception.UsernameAlreadyExistsException;
 import sg.edu.ntu.taskflow_api.users.repository.UserRepository;
@@ -74,6 +75,40 @@ public class UserServiceImpl implements UserService {
         existingUser.setUsername(username);
         existingUser.setPassword(passwordEncoder.encode(user.getPassword()));
         existingUser.setRole(user.getRole());
+
+        userRepository.save(existingUser);
+        return existingUser;
+    }
+
+    @Override
+    public User updateUser(long id, String username, String name, UserRole role) throws UserNotFoundException {
+        String updatedUsername = normalize(username);
+
+        // Check if the user with the given ID exists before updating
+        User existingUser = userRepository.findById(id).orElseThrow(() -> new UserNotFoundException(id));
+
+        // Check if the new username is already taken by another user
+        userRepository.findByUsername(updatedUsername).ifPresent(existingUserWithUsername -> {
+            if (existingUserWithUsername.getId() != id) {
+                throw new UsernameAlreadyExistsException(updatedUsername);
+            }
+        });
+
+        existingUser.setName(name);
+        existingUser.setUsername(updatedUsername);
+        existingUser.setRole(role);
+
+        userRepository.save(existingUser);
+        return existingUser;
+    }
+
+    @Override
+    public User updatePassword(long id, String password) throws UserNotFoundException {
+
+        // Check if the user with the given ID exists before updating
+        User existingUser = userRepository.findById(id).orElseThrow(() -> new UserNotFoundException(id));
+
+        existingUser.setPassword(passwordEncoder.encode(password));
 
         userRepository.save(existingUser);
         return existingUser;
