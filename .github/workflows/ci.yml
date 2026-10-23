@@ -1,138 +1,83 @@
-name: build_test_publish_deploy
+name: Semantic Release & Container Build
 
 on:
   push:
     branches:
       - main
 
+# Configure GITHUB_TOKEN permissions for all jobs in this workflow
 permissions:
-  contents: write
+  contents: write # Required to push Git tags and releases
+  issues: write # Required for semantic-release to comment on issues
+  pull-requests: write # Required for semantic-release to comment on PRs
 
 jobs:
-  # ==========================================
-  # BUILD JOB - Compile and package
-  # ==========================================
-  build:
+  # JOB 1: Calculate version and create Git Tag + GitHub Release
+  release:
+    name: Semantic Release
     runs-on: ubuntu-latest
+    outputs:
+      new_release_published: ${{ steps.semantic.outputs.new_release_published }}
+      new_release_version: ${{ steps.semantic.outputs.new_release_version }}
+      new_release_git_tag: ${{ steps.semantic.outputs.new_release_git_tag }}
 
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v7
-
-      - name: Set up Java 21 and cache Maven dependencies
-        uses: actions/setup-java@v6
-        with:
-          distribution: temurin
-          java-version: '21'
-          cache: maven
-
-      - name: Install dependencies and build
-        run: |
-          echo "Building the application..."
-          mvn clean install -DskipTests
-
-      - name: Save JAR for the publish job
-        uses: actions/upload-artifact@v7
-        with:
-          name: app-jar
-          path: target/*.jar
-
-  # ==========================================
-  # TEST JOB - Run automated tests
-  # ==========================================
-  test:
-    runs-on: ubuntu-latest
-    needs: build
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v7
-
-      - name: Set up Java 21 and cache Maven dependencies
-        uses: actions/setup-java@v6
-        with:
-          distribution: temurin
-          java-version: '21'
-          cache: maven
-
-      - name: Run tests
-        run: |
-          echo "Running tests..."
-          mvn test
-
-      - name: Save test reports
-        if: always()
-        uses: actions/upload-artifact@v7
-        with:
-          name: test-reports
-          path: target/surefire-reports
- 
-  # ==========================================
-  # PUBLISH JOB - Build and push Docker image
-  # ==========================================
-  publish:
-    runs-on: ubuntu-latest
-    needs: test
-
-    steps:
-      # fetch-depth: 0 is required so the versioning action can read Git tags/history
-      - name: Checkout code
+      - name: Checkout repository
         uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
-      - name: Get JAR from the build job
-        uses: actions/download-artifact@v8
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
         with:
-          name: app-jar
-          path: target
+          node-version: 'lts/*'
 
-      - name: Calculate SemVer
-        id: version
-        uses: paulhatch/semantic-version@v5.4.0
-        with:
-          tag_prefix: "v"
-          major_pattern: "(MAJOR)"
-          minor_pattern: "feat:"
+      - name: Run Semantic Release
+        id: semantic
+        uses: cycjimmy/semantic-release-action@v8
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # JOB 2: Build & Push Container Image if a new release was published
+  build-and-push:
+    name: Build Container Image
+    needs: release
+    if: needs.release.outputs.new_release_published == 'true'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
 
       - name: Log in to Docker Hub
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           username: ${{ secrets.DOCKER_USERNAME }}
-          password: ${{ secrets.DOCKER_TOKEN }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      - name: Extract Docker metadata
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ secrets.DOCKER_USERNAME }}/user-service
+          tags: |
+            type=raw,value=${{ needs.release.outputs.new_release_version }}
+            type=raw,value=${{ needs.release.outputs.new_release_git_tag }}
+            type=raw,value=latest
+            type=sha,prefix=sha-,format=long
 
       - name: Build and push Docker image
+        id: build
         uses: docker/build-push-action@v6
         with:
           context: .
           push: true
-          tags: | 
-            ${{ secrets.DOCKER_USERNAME }}/user-service:${{ steps.version.outputs.version }}
-            ${{ secrets.DOCKER_USERNAME }}/user-service:latest
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
 
-      - name: Create Git Tag
+      - name: Output Image Digest
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git tag ${{ steps.version.outputs.version_tag }}
-          git push origin ${{ steps.version.outputs.version_tag }}
-  
-  # ==========================================
-  # DEPLOY JOB - Trigger Railway to pull latest Docker Hub image
-  # ==========================================
-  deploy:
-    runs-on: ubuntu-latest
-    needs: publish
-    steps:
-      - name: Install Railway CLI
-        run: npm install -g @railway/cli
-
-      - name: Redeploy Docker Image on Railway
-        run: railway redeploy --project "assignment" --environment production --service "user-service" -y
-        env:
-          RAILWAY_API_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+          echo "Pushed Image Digest: ${{ steps.build.outputs.digest }}"
