@@ -40,6 +40,18 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Print Semantic Release Outcome & Outputs
+        if: always()
+        run: |
+          echo "=================================================="
+          echo "Step Status (Outcome):    ${{ steps.semantic.outcome }}"
+          echo "Step Result (Conclusion): ${{ steps.semantic.conclusion }}"
+          echo "--------------------------------------------------"
+          echo "New Release Published?:   ${{ steps.semantic.outputs.new_release_published }}"
+          echo "New Release Version:      ${{ steps.semantic.outputs.new_release_version }}"
+          echo "New Git Tag:              ${{ steps.semantic.outputs.new_release_git_tag }}"
+          echo "=================================================="
+
   # JOB 2: Build & Push Container Image if a new release was published
   build-and-push:
     name: Build Container Image
