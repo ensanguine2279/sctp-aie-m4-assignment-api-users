@@ -1,0 +1,156 @@
+name: build_test_publish_deploy
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+jobs:
+  # ==========================================
+  # BUILD JOB - Compile and package
+  # ==========================================
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Set up Java 21 and cache Maven dependencies
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+
+      - name: Install dependencies and build
+        run: |
+          echo "Building the application..."
+          mvn clean install -DskipTests
+
+      - name: Save JAR for the publish job
+        uses: actions/upload-artifact@v7
+        with:
+          name: app-jar
+          path: target/*.jar
+
+  # ==========================================
+  # TEST JOB - Run automated tests
+  # ==========================================
+  test:
+    runs-on: ubuntu-latest
+    needs: build
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Set up Java 21 and cache Maven dependencies
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+
+      - name: Run tests
+        run: |
+          echo "Running tests..."
+          mvn test
+
+      - name: Save test reports
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: test-reports
+          path: target/surefire-reports
+ 
+  # ==========================================
+  # PUBLISH JOB - Build and push Docker image
+  # ==========================================
+  publish:
+    runs-on: ubuntu-latest
+    needs: test
+
+    steps:
+      # fetch-depth: 0 is required so the versioning action can read Git tags/history
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Get JAR from the build job
+        uses: actions/download-artifact@v8
+        with:
+          name: app-jar
+          path: target
+
+      - name: Calculate SemVer
+        id: version
+        uses: paulhatch/semantic-version@v5.4.0
+        with:
+          tag_prefix: "v"
+          major_pattern: "(MAJOR)"
+          minor_pattern: "feat:"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_TOKEN }}
+
+      - name: Extract Docker metadata (Tags & Labels)
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          # Set the full image name here (Username/Repository)
+          images: ${{ secrets.DOCKERHUB_USERNAME }}/user-service
+          tags: |
+            type=sha,prefix=sha-,format=long
+            type=ref,event=branch
+            type=semver,pattern={{version}}
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          # steps.meta.outputs.tags automatically expands to:
+          # myusername/user-service:1.0.0
+          # myusername/user-service:sha-a1b2c3d4e5...
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Create Git Tag
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag ${{ steps.version.outputs.version_tag }}
+          git push origin ${{ steps.version.outputs.version_tag }}
+
+      - name: Print image digest for traceability
+        run: |
+          echo "Pushed Image Tag(s): ${{ steps.meta.outputs.tags }}"
+          echo "Pushed Image Digest: ${{ steps.build.outputs.digest }}"
+  
+  # ==========================================
+  # DEPLOY JOB - Trigger Railway to pull latest Docker Hub image
+  # ==========================================
+  deploy:
+    runs-on: ubuntu-latest
+    needs: publish
+    steps:
+      - name: Install Railway CLI
+        run: npm install -g @railway/cli
+
+      - name: Redeploy Docker Image on Railway
+        run: railway redeploy --project "assignment" --environment production --service "user-service" -y
+        env:
+          RAILWAY_API_TOKEN: ${{ secrets.RAILWAY_TOKEN }}

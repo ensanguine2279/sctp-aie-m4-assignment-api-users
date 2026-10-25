@@ -1,4 +1,4 @@
-name: Semantic Release & Container Build
+name: Semantic Release, Container Build & Swarm Deploy
 
 on:
   push:
@@ -11,10 +11,48 @@ permissions:
   issues: write # Required for semantic-release to comment on issues
   pull-requests: write # Required for semantic-release to comment on PRs
 
+# For the tasks repo, change only these five values (and nothing else in the file).
+env:
+  IMAGE_NAME: user-service          # tasks repo: task-service
+  STACK_NAME: users                 # tasks repo: tasks
+  STACK_FILE: stack-users.yml       # tasks repo: stack-tasks.yml (must be committed in the repo root)
+  ENV_FILE: users.env               # tasks repo: tasks.env (lives on the swarm manager, never in git)
+  SERVICE_NAME: users_user-service  # tasks repo: tasks_task-service
+
 jobs:
+  # JOB 0: Run the test suite. Nothing is released, built or deployed unless this passes.
+  test:
+    name: Run Tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+
+      # The tests generate throwaway RSA keys and register their own JWT properties
+      # (TestJwtKeys + @DynamicPropertySource) and run on H2, so no env vars or database are needed.
+      - name: Run tests
+        run: mvn -B -ntp test
+
+      - name: Upload test reports on failure
+        if: failure()
+        uses: actions/upload-artifact@v5
+        with:
+          name: surefire-reports
+          path: target/surefire-reports/
+          if-no-files-found: ignore
+
   # JOB 1: Calculate version and create Git Tag + GitHub Release
   release:
     name: Semantic Release
+    needs: test
     runs-on: ubuntu-latest
     outputs:
       new_release_published: ${{ steps.semantic.outputs.new_release_published }}
@@ -58,6 +96,8 @@ jobs:
     needs: release
     if: needs.release.outputs.new_release_published == 'true'
     runs-on: ubuntu-latest
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
 
     steps:
       - name: Checkout repository
@@ -76,7 +116,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@v6
         with:
-          images: ${{ secrets.DOCKER_USERNAME }}/user-service
+          images: ${{ secrets.DOCKER_USERNAME }}/${{ env.IMAGE_NAME }}
           tags: |
             type=raw,value=${{ needs.release.outputs.new_release_version }}
             type=raw,value=${{ needs.release.outputs.new_release_git_tag }}
@@ -91,7 +131,83 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          # Enable GitHub Actions cache for faster Maven layer builds
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
 
       - name: Output Image Digest
         run: |
           echo "Pushed Image Digest: ${{ steps.build.outputs.digest }}"
+
+  # JOB 3: Roll the new image out to the Docker Swarm
+  deploy:
+    name: Deploy to Swarm
+    needs: [release, build-and-push]
+    runs-on: ubuntu-latest
+    # Never run two deploys of the same stack at once, and never cancel one halfway.
+    concurrency:
+      group: deploy-${{ github.repository }}
+      cancel-in-progress: false
+
+    steps:
+      - name: Checkout repository (for the stack file)
+        uses: actions/checkout@v7
+
+      - name: Set up SSH
+        env:
+          SSH_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+          KNOWN_HOSTS: ${{ secrets.SSH_KNOWN_HOSTS }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+
+      - name: Copy stack file to the manager
+        env:
+          SSH_TARGET: ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}
+        run: scp -o IdentitiesOnly=yes "$STACK_FILE" "$SSH_TARGET:~/$STACK_FILE"
+
+      - name: Deploy the stack and wait for the rolling update
+        env:
+          SSH_TARGET: ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}
+          # Version tag for readability, digest for exactness (the docker daemon uses the digest).
+          IMAGE_TAG: ${{ needs.release.outputs.new_release_version }}@${{ needs.build-and-push.outputs.digest }}
+        run: |
+          ssh -o IdentitiesOnly=yes "$SSH_TARGET" \
+            "IMAGE_TAG='$IMAGE_TAG' STACK_NAME='$STACK_NAME' STACK_FILE='$STACK_FILE' ENV_FILE='$ENV_FILE' SERVICE_NAME='$SERVICE_NAME' bash -s" <<'REMOTE'
+          set -euo pipefail
+          cd ~
+
+          # docker stack deploy does not read .env files, so export the values first.
+          set -a; source "$ENV_FILE"; set +a
+
+          echo "Deploying $STACK_NAME with image tag $IMAGE_TAG"
+          sudo -E docker stack deploy --with-registry-auth -c "$STACK_FILE" "$STACK_NAME"
+
+          # Wait up to 10 minutes for the rolling update to finish.
+          for i in $(seq 1 60); do
+            state=$(sudo docker service inspect "$SERVICE_NAME" \
+              --format '{{if .UpdateStatus}}{{.UpdateStatus.State}}{{else}}none{{end}}')
+            echo "[$i/60] update state: $state"
+            case "$state" in
+              completed|none)
+                sudo docker stack services "$STACK_NAME"
+                echo "Deploy finished."
+                exit 0 ;;
+              rollback_started|rollback_completed|rollback_paused|paused)
+                echo "Update failed ($state). Recent task history:"
+                sudo docker service ps "$SERVICE_NAME" --no-trunc | head -n 15
+                exit 1 ;;
+            esac
+            sleep 10
+          done
+
+          echo "Timed out waiting for the update to complete."
+          sudo docker service ps "$SERVICE_NAME" --no-trunc | head -n 15
+          exit 1
+          REMOTE
+
+      - name: Clean up SSH key
+        if: always()
+        run: rm -f ~/.ssh/id_ed25519

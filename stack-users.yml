@@ -1,0 +1,91 @@
+version: "3.8"
+
+# Deploy:  set -a; source .env; set +a; docker stack deploy -c stack-users.yml users
+# (docker stack deploy does NOT read .env by itself)
+
+services:
+  user-db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${DB_NAME_ENV}
+      POSTGRES_USER: ${DB_USER_ENV}
+      POSTGRES_PASSWORD: ${DB_PASSWORD_ENV}
+    # No "ports:" on purpose: the database is reachable only on the overlay network.
+    volumes:
+      - user_db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER_ENV} -d ${DB_NAME_ENV}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - users-network
+    deploy:
+      replicas: 1
+      placement:
+        # The volume lives on one node's disk, so pin the database to it.
+        # One-off:  docker node update --label-add db=true <node-name>
+        constraints: [node.labels.db == true]
+      restart_policy:
+        condition: on-failure
+      resources:
+        limits:
+          memory: 384M
+
+  user-service:
+    image: ensanguine/user-service:${IMAGE_TAG:-latest}   # prefer a version tag, e.g. 1.0.0
+    ports:
+      - target: ${APP_PORT_ENV:-8022}
+        published: ${APP_PORT_ENV:-8022}
+        protocol: tcp
+        mode: ingress
+    environment:
+      - APP_PORT=${APP_PORT_ENV}
+      - DB_HOST=user-db                # service name on the stack network
+      - DB_PORT=5432
+      - DB_NAME=${DB_NAME_ENV}
+      - DB_USER=${DB_USER_ENV}
+      - DB_PASSWORD=${DB_PASSWORD_ENV}
+      - JWT_PRIVATE_KEY_PATH=/run/secrets/jwt_private_key
+      - JWT_EXPIRATION_MS=${JWT_EXPIRATION_MS_ENV}
+      - JWT_ISSUER=${JWT_ISSUER_ENV}
+      - JWT_AUDIENCE=${JWT_AUDIENCE_ENV}
+      - ADMIN_USERNAME=${ADMIN_USERNAME_ENV}
+      - ADMIN_PASSWORD=${ADMIN_PASSWORD_ENV}
+      - JAVA_TOOL_OPTIONS=-XX:MaxRAMPercentage=70
+    secrets:
+      - source: jwt_private_key
+        target: jwt_private_key
+        mode: 0444                     # readable by any container user, so no LOCAL_UID/LOCAL_GID needed
+    networks:
+      - users-network
+    deploy:
+      replicas: 2
+      update_config:
+        parallelism: 1
+        delay: 15s
+        order: start-first
+        failure_action: rollback
+      rollback_config:
+        order: start-first
+      restart_policy:
+        condition: on-failure
+        delay: 10s                     # replaces depends_on: retry until the DB is up
+        max_attempts: 10
+        window: 60s
+      resources:
+        limits:
+          memory: 512M
+
+secrets:
+  jwt_private_key:
+    # Read from the machine where you run "docker stack deploy" (the manager).
+    # Use a FRESH production key pair, never the development one.
+    file: ${JWT_PRIVATE_KEY_FILE:-${HOME}/keys/private.pem}
+
+networks:
+  users-network:
+    driver: overlay
+
+volumes:
+  user_db_data:
