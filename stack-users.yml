@@ -81,7 +81,7 @@ secrets:
   jwt_private_key:
     # Read from the machine where you run "docker stack deploy" (the manager).
     # Use a FRESH production key pair, never the development one.
-    file: ${JWT_PRIVATE_KEY_FILE:-${HOME}/keys/private.pem}
+    file: ${JWT_PRIVATE_KEY_FILE}
 
 networks:
   users-network:
