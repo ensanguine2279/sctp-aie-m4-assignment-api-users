@@ -57,6 +57,12 @@ services:
       - source: jwt_private_key
         target: jwt_private_key
         mode: 0444                     # readable by any container user, so no LOCAL_UID/LOCAL_GID needed
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:${APP_PORT_ENV}/actuator/health/liveness | grep -q UP || wget -qO- http://localhost:${APP_PORT_ENV}/actuator/health/liveness | grep -q UP"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 90s        # Spring Boot startup is slow on small VMs
     networks:
       - users-network
     deploy:
@@ -64,6 +70,7 @@ services:
       update_config:
         parallelism: 1
         delay: 15s
+        monitor: 30s
         order: start-first
         failure_action: rollback
       rollback_config:
