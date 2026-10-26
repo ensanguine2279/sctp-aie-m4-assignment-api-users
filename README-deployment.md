@@ -153,6 +153,8 @@ In the repo root: `stack-users.yml` (committed) and a `Dockerfile`. Semantic-rel
 
 semantic-release only cuts a version when commit subjects follow [Conventional Commits](https://www.conventionalcommits.org/), so a `commit-msg` Git hook in `.githooks/` rejects any other format before the commit is made.
 
+![Reject commit due to message format](assets/images/users-githook-commit-msg.jpg)
+
 **One-time setup per clone.** Git does not run committed hooks on its own, so each developer runs this once from the repo root:
 
 ```sh
