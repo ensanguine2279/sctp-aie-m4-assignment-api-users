@@ -342,8 +342,12 @@ Click [here](README-authentication.md) for the token format, key handling and a 
 
 ## Dockerfile
 
-Click [here](README-Dockerfile.md) for run down on the `Dockerfile`.
+Click [here](README-Dockerfile.md) for the run down on the `Dockerfile`.
 
 ## Docker Compose
 
 Click [here](README-docker-compose.md) for walkthrough on the `docker-compose.yml`.
+
+## Deployment Workflow
+
+Click [here](README-deployment.md) for details on the GitHub Actions workflow.
