@@ -34,11 +34,13 @@ services:
 
   user-service:
     image: ensanguine/user-service:${IMAGE_TAG:-latest}   # prefer a version tag, e.g. 1.0.0
-    ports:
-      - target: ${APP_PORT_ENV:-8022}
-        published: ${APP_PORT_ENV:-8022}
-        protocol: tcp
-        mode: ingress
+    # Not published: traffic reaches this service through the Caddy proxy over the overlay network.
+    # Re-enable temporarily only for debugging (and reopen the firewall rule if you do).
+    # ports:
+    #   - target: ${APP_PORT_ENV:-8022}
+    #     published: ${APP_PORT_ENV:-8022}
+    #     protocol: tcp
+    #     mode: ingress
     environment:
       - APP_PORT=${APP_PORT_ENV}
       - DB_HOST=user-db                # service name on the stack network
