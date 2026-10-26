@@ -5,7 +5,7 @@
 Every push to `main` runs four jobs in strict order: **test → release → build-and-push → deploy**. Each job runs only if the one before it succeeded, and the build and deploy run only when the commits since the last tag warrant a new version.
 
 ```mermaid
-flowchart LR
+flowchart TD
     push[Push to main] --> test[Run tests]
     test -- pass --> release[Semantic release]
     test -. fails .-> stop1([Stop, upload test reports])
@@ -129,12 +129,59 @@ The runner passes five values into the remote shell: `IMAGE_TAG`, `STACK_NAME`, 
 | State | Meaning | Result |
 | --- | --- | --- |
 | `updating` (or anything unlisted) | Rollout still in progress | Keep waiting |
-| `completed` | All replicas replaced and healthy | Print `docker stack services`, exit 0 |
+| `completed` | Every replica replaced, and each new one passed its healthcheck and stayed up through the 30-second monitor window | Print `docker stack services`, exit 0 |
 | `none` | No update recorded, e.g. the service was just created | Treated as success, exit 0 |
 | `paused`, `rollback_started`, `rollback_paused`, `rollback_completed` | The update failed and Swarm stopped or reverted it | Print the last 15 task-history lines, exit 1 |
 | Still waiting after 60 checks | Rollout took over 10 minutes | Print task history, exit 1 |
 
-For this to work, the image line in `stack-users.yml` must use the variable, e.g. `image: <dockerhub-user>/user-service:${IMAGE_TAG}`. If it hard-codes a tag, every deploy reports success without changing anything.
+The image line in `stack-users.yml` is `ensanguine/user-service:${IMAGE_TAG:-latest}`, so the pipeline's `IMAGE_TAG` picks the exact build. The `latest` fallback applies only to a manual `docker stack deploy` run without `IMAGE_TAG` set. If the line ever hard-codes a tag, every deploy reports success without changing anything.
+
+### Health checks and rollout behaviour
+
+The rollout is gated on Spring Boot Actuator's liveness probe: Swarm moves on to the next replica only once the new container reports `UP`, and rolls the whole update back if it never does.
+
+The healthcheck in `stack-users.yml`:
+
+```yaml
+healthcheck:
+  test: ["CMD-SHELL", "curl -fsS http://localhost:${APP_PORT_ENV}/actuator/health/liveness | grep -q UP || wget -qO- http://localhost:${APP_PORT_ENV}/actuator/health/liveness | grep -q UP"]
+  interval: 15s
+  timeout: 5s
+  retries: 3
+  start_period: 90s        # Spring Boot startup is slow on small VMs
+```
+
+| Setting | Value | Effect |
+| --- | --- | --- |
+| `start_period` | 90s | Failed checks during the first 90 seconds don't count, so a slow Spring startup isn't mistaken for a failure |
+| `interval`, `timeout`, `retries` | 15s, 5s, 3 | After the grace period, three failed checks in a row (about 45 seconds) mark the container unhealthy |
+| Command | `curl`, falling back to `wget` | The check works whether the image ships `curl` or `wget`. With neither, every check fails |
+
+The service's `update_config` decides what Swarm does with that signal:
+
+| Setting | Value | Effect |
+| --- | --- | --- |
+| `parallelism` | 1 | One of the two replicas is replaced at a time |
+| `order` | `start-first` | The new container starts and must turn healthy before the old one stops, so capacity never drops below two |
+| `monitor` | 30s | After a new replica turns healthy, Swarm watches it for 30 more seconds before counting it as a success |
+| `delay` | 15s | Pause before replacing the next replica |
+| `failure_action` | `rollback` | A replica that fails the healthcheck or crashes inside the monitor window reverts the whole service to the previous image |
+| `rollback_config.order` | `start-first` | The rollback also starts old containers before stopping new ones |
+
+In practice:
+
+- A good release takes roughly two × (Spring startup + 45 seconds), well inside the job's 10-minute wait.
+- A release that never becomes healthy is marked unhealthy about 2 to 3 minutes in. Swarm then rolls back, the poll loop sees `rollback_started` or `rollback_completed`, and the job fails while the previous version keeps serving.
+- `start-first` briefly runs three `user-service` containers at once. With a 512 MB limit each, the nodes need about 1.5 GB free for the service during a rollout.
+
+For the check to pass, the app must serve `/actuator/health/liveness` without a token:
+
+- `spring-boot-starter-actuator` is on the classpath.
+- Health probes are enabled with `management.endpoint.health.probes.enabled=true`. Spring Boot turns the `liveness` and `readiness` groups on by itself only on Kubernetes, so on Swarm the path returns 404 without this property.
+- `SecurityConfig` permits `/actuator/health/**`. Otherwise the check gets a 401 and fails.
+- Only the `health` endpoint is exposed (`management.endpoints.web.exposure.include=health`), and it reports status only, not component details.
+
+Liveness only says the application is running; it does not check PostgreSQL. A bad database setting still fails a release, because the app cannot start without its database and the crashing container triggers the rollback. But if the database goes down later, the containers stay healthy while every request that touches users fails. Adding `db` to the readiness group (`management.endpoint.health.group.readiness.include=readinessState,db`) and checking `/actuator/health/readiness` instead would report that, at the cost of Swarm replacing containers whenever the database is briefly unavailable.
 
 ## Required secrets and server setup
 
@@ -153,7 +200,8 @@ Six repository secrets must exist under **Settings → Secrets and variables →
 On the swarm manager, the SSH user's home directory needs:
 
 - [ ] Docker Swarm initialised, with this host as a manager node
-- [ ] `users.env` in the home directory, holding every variable the stack file references
+- [ ] `users.env` in the home directory, holding every variable the stack file references, including `JWT_PRIVATE_KEY_FILE` (the path of the production private key on the manager)
+- [ ] The database node labelled once with `docker node update --label-add db=true <node-name>`, because `user-db` is pinned to the node that holds its volume
 - [ ] Passwordless `sudo` for `docker`, with `-E` allowed so exported variables survive (the job has no terminal to type a password)
 - [ ] Root's Docker client logged in to Docker Hub (`sudo docker login`) if the image repository is private — `--with-registry-auth` forwards those credentials to the workers
 
@@ -203,10 +251,12 @@ Most failures show up in one specific job; start from the job that turned red.
 | `build-and-push` fails at login | Wrong or expired `DOCKER_TOKEN` | Create a new Docker Hub access token and update the secret |
 | `deploy` fails at `scp` or `ssh` with host key or permission errors | Bad `SSH_KNOWN_HOSTS`, wrong key, or key not in `authorized_keys` | Re-run `ssh-keyscan`, confirm the key pair matches, test the login by hand |
 | `deploy` fails with `users.env: No such file or directory` | Env file missing from the SSH user's home | Create it on the manager (never commit it) |
-| `deploy` reports `paused` or `rollback_*` | New containers failed to start or failed health checks | Read the task history in the log, then `docker service logs users_user-service` on the manager |
+| `deploy` reports `rollback_started` or `rollback_completed` | A new container crashed or never passed the liveness check | Read the task history in the log, then `sudo docker service logs users_user-service` on the manager. The previous version is still serving |
+| Every deploy rolls back, even for small changes | The liveness check itself fails: probes not enabled (404), the path not permitted in `SecurityConfig` (401), or neither `curl` nor `wget` in the image | Run the check inside a running container: `sudo docker exec <container> curl -fsS localhost:<port>/actuator/health/liveness` |
+| `deploy` fails with `only updates to Labels are allowed` on `jwt_private_key` | The key file changed, but Swarm secrets cannot be changed in place | Rename the secret in the stack file (e.g. `jwt_private_key_v2`) and keep the same `target` path |
 | `deploy` times out after 10 minutes | Slow pulls, too few nodes for the update policy, or a hanging health check | Check `docker service ps` on the manager; fix the cause and re-run the job |
 | Deploy succeeds but the old version is still running | Stack file hard-codes the image tag instead of `${IMAGE_TAG}` | Change the image line to use `${IMAGE_TAG}` |
 
 **Re-running a deploy.** Use "Re-run failed jobs" on the workflow run. The version and digest outputs from the earlier jobs are reused, so the same image is rolled out again without cutting a new release.
 
-**Rolling back.** Swarm only rolls back automatically if the stack file sets `update_config.failure_action: rollback`; the default is `pause`. To roll back by hand, run `sudo docker service rollback users_user-service` on the manager, or revert the bad commit with a `fix:` message so the pipeline ships a new patch release.
+**Rolling back.** A release that fails its healthcheck is rolled back automatically, because the stack file sets `failure_action: rollback`. A release that is healthy but wrong is not. To roll that back by hand, run `sudo docker service rollback users_user-service` on the manager, or revert the bad commit with a `fix:` message so the pipeline ships a new patch release.

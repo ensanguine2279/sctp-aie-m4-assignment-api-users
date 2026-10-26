@@ -254,7 +254,7 @@ Rules worth knowing:
 | **Only `ROLE_*` roles are read from a token** | Anything else in the `roles` claim is ignored, and a missing or malformed claim means no authorities, never an error. |
 | **Short-lived, stateless tokens** | Nothing is stored server-side, so tokens cannot be revoked. Keep the lifetime short and handle disabled users on this service. |
 
-For the token format, key handling details and a troubleshooting table, see [AUTHENTICATION.md](AUTHENTICATION.md).
+For the token format, key handling details and a troubleshooting table, see [README-authentication.md](README-authentication.md).
 
 ## Project structure
 
