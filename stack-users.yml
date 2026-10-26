@@ -18,6 +18,11 @@ services:
       interval: 5s
       timeout: 5s
       retries: 5
+    ports:
+      - target: 5432
+        published: 5422
+        protocol: tcp
+        mode: host # binds on swarm-1 only
     networks:
       - users-network
     deploy:
