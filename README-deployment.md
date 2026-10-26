@@ -20,6 +20,8 @@ flowchart LR
 
 The result of a successful run is a Git tag and GitHub Release (e.g. `v1.4.0`), a Docker Hub image `user-service:1.4.0`, and the `users` stack on the swarm running that exact image digest.
 
+![GitHub Actions workflow](assets/images/users-gha-workflow.jpg)
+
 ## Configuration
 
 Everything repo-specific lives in five `env` values at the top of the file; the jobs never hard-code names. To reuse this workflow for the tasks service, change only these five lines.
@@ -44,6 +46,8 @@ This is the gate: if the Maven test suite fails, no version is cut, no image is 
 4. **Upload test reports on failure** — only when a previous step failed, the `target/surefire-reports/` folder is attached to the run as an artifact named `surefire-reports`. Download it from the run's summary page to see which test broke and why.
 
 The tests are self-contained: they generate throwaway RSA keys and register their own JWT properties (`TestJwtKeys` + `@DynamicPropertySource`) and run against an in-memory H2 database. That is why this job needs no secrets, env vars or database service.
+
+![Testing in the GitHub Actions workflow](assets/images/user-gha-workflow-tests.jpg)
 
 ## Job 1 — Semantic Release (`release`)
 
@@ -73,6 +77,8 @@ How commit messages map to versions (semantic-release defaults):
 
 A push with no releasable commits is not a failure: the job succeeds with `new_release_published = false`, and the build and deploy jobs are skipped. A local Git hook rejects malformed messages before they reach `main`; see [Commit message convention](#commit-message-convention).
 
+![Semantic release generated](assets/images/user-gha-workflow-release.jpg)
+
 ## Job 2 — Build Container Image (`build-and-push`)
 
 This job builds the image from the repo's `Dockerfile` and pushes it to Docker Hub, but only when `release` reported `new_release_published == 'true'`.
@@ -95,6 +101,8 @@ Every release pushes the same image under four tags:
 
 The job's one output is `digest` (`sha256:...`), the content hash of what was pushed. The deploy job pins to this digest so the swarm runs exactly this build, even if a tag is later moved.
 
+![Published images on Docker Hub repository](assets/images/users-docker-repo-tags.jpg)
+
 ## Job 3 — Deploy to Swarm (`deploy`)
 
 This job SSHes into the swarm manager, redeploys the stack with the new image and waits up to 10 minutes for the rolling update to settle. It needs both `release` (for the version) and `build-and-push` (for the digest), so it is skipped whenever the build was skipped.
@@ -106,6 +114,8 @@ This job SSHes into the swarm manager, redeploys the stack with the new image an
 3. **Copy the stack file** — `scp` sends `stack-users.yml` to the SSH user's home directory on the manager.
 4. **Deploy and wait** — one SSH session runs a script on the manager (details below).
 5. **Clean up the SSH key** — always runs, even after a failure, and deletes the key file from the runner.
+
+![Deploying to Docker swarm](assets/images/users-gha-workflow-swarm.jpg)
 
 ### What runs on the manager
 
