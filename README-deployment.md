@@ -66,12 +66,12 @@ How commit messages map to versions (semantic-release defaults):
 
 | Commit message | Version bump | Example |
 | --- | --- | --- |
-| `fix: ...` | Patch | 1.3.2 → 1.3.3 |
+| `fix: ...`, `perf: ...`, `revert: ...` | Patch | 1.3.2 → 1.3.3 |
 | `feat: ...` | Minor | 1.3.2 → 1.4.0 |
 | `feat!: ...` or a `BREAKING CHANGE:` footer | Major | 1.3.2 → 2.0.0 |
-| `chore:`, `docs:`, `refactor:`, `test:`, `ci:` and other types | None | No release, pipeline stops here |
+| `chore:`, `docs:`, `style:`, `refactor:`, `test:`, `build:`, `ci:` | None | No release, pipeline stops here |
 
-A push with no releasable commits is not a failure: the job succeeds with `new_release_published = false`, and the build and deploy jobs are skipped.
+A push with no releasable commits is not a failure: the job succeeds with `new_release_published = false`, and the build and deploy jobs are skipped. A local Git hook rejects malformed messages before they reach `main`; see [Commit message convention](#commit-message-convention).
 
 ## Job 2 — Build Container Image (`build-and-push`)
 
@@ -149,6 +149,34 @@ On the swarm manager, the SSH user's home directory needs:
 
 In the repo root: `stack-users.yml` (committed) and a `Dockerfile`. Semantic-release also expects a release config (for example `.releaserc`) if you need anything beyond its defaults, such as a branch other than `main`.
 
+## Commit message convention
+
+semantic-release only cuts a version when commit subjects follow [Conventional Commits](https://www.conventionalcommits.org/), so a `commit-msg` Git hook in `.githooks/` rejects any other format before the commit is made.
+
+**One-time setup per clone.** Git does not run committed hooks on its own, so each developer runs this once from the repo root:
+
+```sh
+git config core.hooksPath .githooks
+chmod +x .githooks/commit-msg   # only if the execute bit was lost
+```
+
+**Format.** `<type>[optional scope][!]: <description>`, with a lowercase type, a lowercase scope (letters, digits, `.`, `_`, `-`) and a space after the colon. Allowed types: `feat`, `fix`, `docs`, `style`, `refactor`, `perf`, `test`, `build`, `ci`, `chore`, `revert`. The version-bump table in [Job 1](#job-1--semantic-release-release) shows which ones trigger a release.
+
+```text
+feat(auth): add JWT authentication endpoint
+fix(db): resolve HikariCP connection pool leak
+feat(api)!: remove the v1 task endpoints
+chore(deps): update Spring Boot to 4.1.0
+```
+
+What the hook checks and allows:
+
+- Only the subject (first non-comment, non-blank line) is checked. The body and footers, including `BREAKING CHANGE:`, are free text.
+- Git's own messages pass unchanged: `Merge ...`, `Revert "..."`, and `fixup!`, `squash!` and `amend!` commits.
+- `Feat: ...` or `FIX: ...` is rejected, because semantic-release would silently ignore it.
+
+**Limits.** The hook only guards commits made locally by someone who ran the setup. Commits made on GitHub bypass it: web edits, and squash or merge commits created from a pull request. If PRs are squash-merged, the PR title becomes the commit subject on `main`, so write PR titles in the same format. Bypassing the hook with `git commit --no-verify` is possible but leaves a commit semantic-release cannot read.
+
 ## Troubleshooting
 
 Most failures show up in one specific job; start from the job that turned red.
@@ -157,6 +185,8 @@ Most failures show up in one specific job; start from the job that turned red.
 | --- | --- | --- |
 | `test` fails | A failing unit or integration test | Download the `surefire-reports` artifact from the run and read the failing test's report |
 | Pipeline stops after `release`, build and deploy show as skipped | No `feat:`/`fix:`/breaking commits since the last tag | Expected; check the "Print Semantic Release Outcome" log. Use a releasable commit type to ship |
+| A `feat:` or `fix:` change was merged but no release was cut | The subject on `main` is not in the convention, often a squash-merge with a free-form PR title or a commit made with `--no-verify` | Check `git log --oneline` on `main`; ship the change with a correctly formatted commit |
+| `git commit` fails with "INVALID COMMIT MESSAGE FORMAT" | The hook rejected the subject | Reword it as `<type>(scope): description` with a lowercase type |
 | `release` fails with a permission or auth error | Branch protection blocks tag pushes, or token permissions were narrowed | Allow GitHub Actions to push tags, and keep `contents: write` in the workflow |
 | `build-and-push` fails at login | Wrong or expired `DOCKER_TOKEN` | Create a new Docker Hub access token and update the secret |
 | `deploy` fails at `scp` or `ssh` with host key or permission errors | Bad `SSH_KNOWN_HOSTS`, wrong key, or key not in `authorized_keys` | Re-run `ssh-keyscan`, confirm the key pair matches, test the login by hand |
