@@ -86,15 +86,15 @@ The third gate checks every Maven dependency against the National Vulnerability 
 | Set | The NVD API | Freshest |
 | Not set | Dependency-Check's own mirror of the NVD data, published on GitHub | Rebuilt daily, best effort; the run log shows a notice |
 
-![OWASP Dependency Check](assets/images/users-gha-workflow-dep-chk.jpg)
-
-![Dependency check report generated in Artifacts](assets/images/users-gha-workflow-dep-chk-rpt.jpg)
-
 3. **Restore the vulnerability database** — the database is several hundred MB, so the newest copy is restored from the Actions cache and only the changes since are fetched. A fresh copy is saved after every run, with one cache per data source.
 4. **Run Dependency-Check** — `mvn dependency-check:check`, pointed at the cached data directory.
 5. **Upload the report** — always runs, pass or fail, and attaches the HTML and JSON reports as the `dependency-check-report` artifact.
 
 The first run, or a run after the cache expires, downloads the whole database and can take much longer than later runs.
+
+![OWASP Dependency Check](assets/images/users-gha-workflow-dep-chk.jpg)
+
+![Dependency check report generated in Artifacts](assets/images/users-gha-workflow-dep-chk-rpt.jpg)
 
 ## Job 1 — Semantic Release (`release`)
 
