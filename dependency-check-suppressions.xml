@@ -19,4 +19,30 @@
               xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
               xsi:schemaLocation="https://jeremylong.github.io/DependencyCheck/dependency-suppression.1.4.xsd
                                   https://dependency-check.github.io/DependencyCheck/dependency-suppression.1.4.xsd">
+
+   <!-- Reviewed 2026-10-27. -->
+
+   <suppress until="2027-04-30Z">
+      <notes><![CDATA[
+      False positive. spring-boot-devtools is matched to the CPEs of "Spring Tools" and "Spring Boot Tools",
+      which are the Eclipse and VS Code editor plugins, not this library. CVE-2022-31691 is in those editor
+      plugins (Spring Tools 4.16.0 and below, VS Code extensions 1.39.0 and below).
+      Only these two CPEs are suppressed, so real Spring Boot CVEs (cpe vmware:spring_boot) are still reported.
+      DevTools is also left out of the packaged application by Spring Boot's repackaging.
+      ]]></notes>
+      <packageUrl regex="true">^pkg:maven/org\.springframework\.boot/spring-boot-devtools@.*$</packageUrl>
+      <cpe>cpe:/a:vmware:spring_boot_tools</cpe>
+      <cpe>cpe:/a:vmware:spring_tools</cpe>
+   </suppress>
+
+   <suppress until="2027-04-30Z">
+      <notes><![CDATA[
+      False positives (MEDIUM 5.3, below the CVSS 7 threshold, so they do not fail the build).
+      opentelemetry-proto is matched to the generic "opentelemetry" CPE, which covers every language's SDK.
+      CVE-2026-39882 and CVE-2026-41178 (Go), CVE-2026-40894 (.NET), CVE-2026-44967 (C++) and
+      CVE-2026-54285 (JavaScript) are in those SDKs. This jar only holds the protocol's generated Java classes.
+      ]]></notes>
+      <packageUrl regex="true">^pkg:maven/io\.opentelemetry\.proto/opentelemetry-proto@.*$</packageUrl>
+      <cpe>cpe:/a:opentelemetry:opentelemetry</cpe>
+   </suppress>
 </suppressions>
