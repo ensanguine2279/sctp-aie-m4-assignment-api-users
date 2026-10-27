@@ -19,8 +19,10 @@ RUN ./mvnw clean package -DskipTests -Dexec.skip=true
 # ==========================================
 FROM eclipse-temurin:21-jre-alpine
 
-# Install curl (required for the healthcheck command if using Alpine)
-RUN apk add --no-cache curl
+# Install the latest security fixes for the Alpine packages that come with the base image.
+# (No curl: the health check uses BusyBox wget, which is built into Alpine, so there is one
+# package fewer to keep patched.)
+RUN apk upgrade --no-cache
 
 WORKDIR /app
 
@@ -37,8 +39,10 @@ EXPOSE 8022
 # HEALTHCHECK instruction it tells Docker how to test if a running container is actually 
 # functional and ready to handle traffic, rather than just checking if its main process 
 # is still alive.
+# BusyBox wget exits non-zero on a connection error or an HTTP error status, like curl -f.
+# 127.0.0.1 rather than localhost: BusyBox wget does not fall back from IPv6 to IPv4.
 HEALTHCHECK --interval=30s --timeout=3s --start-period=40s --retries=3 \
-  CMD curl -f http://localhost:8022/actuator/health || exit 1
+  CMD wget -q --spider http://127.0.0.1:8022/actuator/health || exit 1
 
 # Configure JVM flags for container resource limits and run
 ENTRYPOINT ["java", "-XX:+UseG1GC", "-XX:MaxRAMPercentage=75.0", "-jar", "app.jar"]
