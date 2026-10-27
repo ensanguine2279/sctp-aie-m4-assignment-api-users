@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Security gate for the TaskFlow users service.
+# Security gate for the TaskFlow services (the same file works in the users service and the tasks API).
 #
 # Fails (exit 1) if anything that could leak or weaken the RS256 signing key is in the repository:
 #   1. a tracked *.pem or .env file
@@ -7,9 +7,10 @@
 #   3. a base64-encoded PEM private key (a JWT_PRIVATE_KEY_BASE64 value) in any tracked file
 #   4. a .dockerignore that would let *.pem or .env into the image build context
 #   5. a Dockerfile that copies a key in or bakes JWT_PRIVATE_KEY_* into the image
-#   6. a default value for jwt.private-key-path, or a leftover HS256 jwt.secret property
+#   6. a default value for jwt.private-key-path / jwt.public-key-path, or a leftover HS256 jwt.secret property
 #   7. a password, secret or token written into the Spring properties or a compose/stack file,
 #      including as a ${VAR:default} fallback
+#   8. tasks API only (detected by jwt.public-key-path): token-signing code (Jwts.builder, signWith) in src/main
 #
 # General secrets (API tokens, cloud keys, anything else, across the whole git history) are covered by
 # gitleaks in CI. This script covers what gitleaks misses: weak default passwords and key handling.
@@ -101,11 +102,12 @@ fi
 # 6. Spring properties: no default key path, no HS256 secret
 props=$(git ls-files 'src/main/resources/application*.properties' 'src/main/resources/application*.yml' 'src/main/resources/application*.yaml')
 if [[ -n "$props" ]]; then
+  # The users service reads jwt.private-key-path, the tasks API jwt.public-key-path. Neither may have a default.
   # shellcheck disable=SC2086
-  if grep -nE 'private-key-path\s*[=:]\s*\$\{JWT_PRIVATE_KEY_PATH:' $props; then
-    fail "jwt.private-key-path has a default value (lines above); a missing key must stop startup"
+  if grep -nE '(private|public)-key-path\s*[=:]\s*\$\{JWT_(PRIVATE|PUBLIC)_KEY_PATH:' $props; then
+    fail "the JWT key path has a default value (lines above); a missing key must stop startup"
   else
-    pass "jwt.private-key-path has no default"
+    pass "the JWT key path has no default"
   fi
   # shellcheck disable=SC2086
   if grep -nE '^\s*jwt\.secret\s*[=:]|^\s*secret\s*:' $props; then
@@ -120,6 +122,18 @@ if [[ -n "$props" ]]; then
     fail "a password, secret or token has a value or default in the Spring properties (lines above); read it from the environment with no default"
   else
     pass "no passwords, secrets or tokens in the Spring properties"
+  fi
+fi
+
+# 8. Tasks API only (it reads jwt.public-key-path): it verifies tokens and must never issue them.
+# Signing code here would need the private key, which this service must never hold.
+# shellcheck disable=SC2086
+if [[ -n "$props" ]] && grep -qE 'public-key-path\s*[=:]' $props && ! grep -qE 'private-key-path\s*[=:]' $props; then
+  signing=$(git ls-files 'src/main/java/*.java' | xargs -r grep -nE 'Jwts\.builder\s*\(|\.signWith\s*\(' || true)
+  if [[ -n "$signing" ]]; then
+    fail "token-signing code in the tasks API, which must only verify tokens:"; echo "$signing" | sed 's/^/        /'
+  else
+    pass "no token-signing code (verify-only service)"
   fi
 fi
 
