@@ -24,6 +24,8 @@ jobs:
   test:
     name: Run Tests
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
 
     steps:
       - name: Checkout repository
@@ -49,10 +51,74 @@ jobs:
           path: target/surefire-reports/
           if-no-files-found: ignore
 
+  # JOB 0b: Security gate, in parallel with the tests. Nothing is released, built or deployed
+  # unless this passes, so a failed check never leaves a Git tag without an image.
+  security:
+    name: Security Checks
+    runs-on: ubuntu-latest
+    # Read-only: this job runs third-party scanners and needs no write access.
+    permissions:
+      contents: read
+    env:
+      SCAN_IMAGE: ci-scan:${{ github.sha }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      # Fast, no build: tracked keys or .env, PEM or base64 private keys in any file,
+      # .dockerignore and Dockerfile key handling, and the jwt.* properties.
+      - name: Key and config hygiene
+        run: |
+          chmod +x scripts/security-check.sh
+          ./scripts/security-check.sh
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      # Same context and cache as build-and-push, so that job reuses these layers. Loaded locally, never pushed.
+      - name: Build image for scanning
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          push: false
+          tags: ${{ env.SCAN_IMAGE }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # Keys are mounted (compose, swarm) or passed at run time (Railway), never baked in.
+      - name: Check the image for keys
+        run: |
+          env_hits=$(docker image inspect "$SCAN_IMAGE" --format '{{range .Config.Env}}{{println .}}{{end}}' \
+            | grep -E '^JWT_PRIVATE_KEY_(BASE64|PATH)=.+' | cut -d= -f1 || true)
+          if [ -n "$env_hits" ]; then
+            echo "The image sets a JWT private key variable: $env_hits"
+            exit 1
+          fi
+          mkdir -p "$RUNNER_TEMP/image-fs"
+          cid=$(docker create "$SCAN_IMAGE")
+          docker export "$cid" | tar -x -C "$RUNNER_TEMP/image-fs" --exclude='proc/*' --exclude='sys/*' --exclude='dev/*'
+          docker rm "$cid" >/dev/null
+          ./scripts/security-check.sh --image-dir "$RUNNER_TEMP/image-fs"
+
+      # Known CVEs in the base image and the jars. Fails on HIGH or CRITICAL that have a fix.
+      # Pinned by commit SHA: tags 0.0.1 to 0.34.2 of this action were hijacked in March 2026
+      # (GHSA-69fq-xp46-6x23). This commit is release 0.35.0, which was not affected.
+      - name: Vulnerability scan
+        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # 0.35.0
+        with:
+          version: 'v0.69.3'
+          image-ref: ${{ env.SCAN_IMAGE }}
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: '1'
+          format: table
+
   # JOB 1: Calculate version and create Git Tag + GitHub Release
   release:
     name: Semantic Release
-    needs: test
+    needs: [test, security]
     runs-on: ubuntu-latest
     outputs:
       new_release_published: ${{ steps.semantic.outputs.new_release_published }}
