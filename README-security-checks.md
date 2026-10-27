@@ -1,7 +1,8 @@
 # Security checks
 
-The users service runs four security checks in its CI pipeline (`.github/workflows/ci.yml`).
-They run in parallel with the tests, and **nothing is released, built, pushed or deployed unless all of them pass**.
+The users service runs its security checks in two CI jobs (`.github/workflows/ci.yml`): `dependency-check`
+and `security`. They run in parallel with the tests, and **nothing is released, built, pushed or deployed
+unless both pass**.
 
 | Objective | Check | Where |
 |---|---|---|
@@ -32,8 +33,8 @@ mvn dependency-check:check \
 # The first run downloads the whole database and takes a while; later runs only fetch changes.
 # report: target/dependency-check-report.html
 
-# Container image (install: https://trivy.dev)
-docker build -t taskflow-users:local .
+# Container image (install: https://trivy.dev). --pull fetches the newest base image, as CI does.
+docker build --pull -t taskflow-users:local .
 trivy image --severity HIGH,CRITICAL --ignore-unfixed taskflow-users:local
 ```
 
@@ -47,8 +48,21 @@ trivy image --severity HIGH,CRITICAL --ignore-unfixed taskflow-users:local
 
 `.gitignore` excludes `*.pem` and `.env`, and `.dockerignore` keeps both out of the image build.
 
+## Findings from the first runs (27 October 2026)
+
+| Check | Finding | Resolution |
+|---|---|---|
+| Dependency-Check | Tomcat 11.0.24 (from `spring-boot-starter-webmvc`): 11 CVEs, 9 of them HIGH or CRITICAL, including authentication and security-constraint bypasses. All fixed in Tomcat 11.0.25 | **Fixed:** Spring Boot upgraded from 4.1.1 to 4.1.2, which ships Tomcat 11.0.27 |
+| Dependency-Check | `spring-boot-devtools`: CVE-2022-31691 (CRITICAL) | **False positive**, suppressed: the CVE is in the Spring Tools editor plugins for Eclipse and VS Code, matched by product name. Only those two product IDs are suppressed, so real Spring Boot CVEs are still reported |
+| Dependency-Check | `opentelemetry-proto`: 5 MEDIUM CVEs (below the threshold) | **False positives**, suppressed: they are in the Go, .NET, C++ and JavaScript OpenTelemetry SDKs, not this Java jar |
+| Trivy | `curl`, `libcurl` (CVE-2026-92392) and `brotli-libs` (CVE-2026-111497), all HIGH, in the Alpine runtime image | **Fixed:** `curl` was installed only for the health check, which now uses Alpine's built-in `wget`, so the packages are no longer in the image. `apk upgrade` applies Alpine fixes on every build, and CI builds with `pull: true` so a newer base image is never hidden by cached layers |
+| gitleaks | 17 findings in old commits | **Reviewed, none live:** a retired HS256 secret (unused since the switch to RS256), expired example tokens in the README, code and docs that mention the PEM header, and a test-only key. Recorded in `.gitleaksignore`, one reason per group. A further 3 were search patterns in `security-check.sh`, allowlisted in `.gitleaks.toml` |
+| `security-check.sh` | None | Passed on the first run |
+
+After these changes, Dependency-Check reports no vulnerabilities above the threshold, and the Trivy scan of the image comes back clean.
+
 ## Handling findings
 
-- **Dependency-Check or Trivy fails:** upgrade the library or base image. If a finding is a false positive, suppress it in `dependency-check-suppressions.xml` (or `.trivyignore`) with a reason and an expiry date.
-- **gitleaks fails:** treat the secret as leaked even after deleting it, because it stays in the history. Revoke or rotate it first, then remove it. A false positive goes into `.gitleaks.toml` as a narrow allowlist entry.
+- **Dependency-Check or Trivy fails:** upgrade the library or base image. Upgrading the Spring Boot parent is usually the cleanest fix, because it updates Tomcat and the other managed libraries together. If a finding is a false positive, suppress it in `dependency-check-suppressions.xml` (or `.trivyignore`) with a reason and an expiry date.
+- **gitleaks fails:** treat the secret as leaked even after deleting it, because it stays in the history. Revoke or rotate it first, then remove it. A reviewed finding in an old commit goes into `.gitleaksignore` (by fingerprint, with a comment). A pattern that is never a secret goes into `.gitleaks.toml` as a narrow allowlist entry.
 - **`security-check.sh` fails:** it prints the file and line and what to change.

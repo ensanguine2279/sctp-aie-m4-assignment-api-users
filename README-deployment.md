@@ -1,14 +1,20 @@
-# User Service Deployment Workflow Walkthrough
+# User Service Deployment Workflow
 
 ## Overview
 
-Every push to `main` runs four jobs in strict order: **test → release → build-and-push → deploy**. Each job runs only if the one before it succeeded, and the build and deploy run only when the commits since the last tag warrant a new version.
+Every push to `main` runs six jobs. Three gates run in parallel: **test**, **security** and **dependency-check**. Only when all three pass does the chain **release → build-and-push → deploy** run, and the build and deploy run only when the commits since the last tag warrant a new version. Because every gate finishes before semantic-release runs, a failed check never leaves a Git tag without an image.
 
 ```mermaid
 flowchart TD
     push[Push to main] --> test[Run tests]
+    push --> security[Security checks]
+    push --> depcheck[OWASP Dependency-Check]
     test -- pass --> release[Semantic release]
-    test -. fails .-> stop1([Stop, upload test reports])
+    security -- pass --> release
+    depcheck -- pass --> release
+    test -. fails .-> stop1([Stop: any failed gate blocks the release])
+    security -. fails .-> stop1
+    depcheck -. fails .-> stop1
     release --> newrel{New release?}
     newrel -. no releasable commits .-> stop2([Stop, nothing to ship])
     newrel -- yes --> build[Build and push image]
@@ -34,11 +40,11 @@ Everything repo-specific lives in five `env` values at the top of the file; the 
 | `ENV_FILE` | `users.env` | `tasks.env` | Runtime settings file kept on the swarm manager only, never in git |
 | `SERVICE_NAME` | `users_user-service` | `tasks_task-service` | The `<stack>_<service>` name the deploy step polls for rollout status |
 
-The workflow-level `permissions` block gives the built-in `GITHUB_TOKEN` write access to `contents` (to push tags and create GitHub Releases), `issues` and `pull-requests` (so semantic-release can comment on what a release shipped). No other job needs more than that.
+The workflow-level `permissions` block gives the built-in `GITHUB_TOKEN` write access to `contents` (to push tags and create GitHub Releases), `issues` and `pull-requests` (so semantic-release can comment on what a release shipped). The three gate jobs override this with `contents: read`, so the tests and the third-party scanners run with a read-only token. `release`, `build-and-push` and `deploy` keep the workflow-level permissions.
 
 ## Job 0 — Run Tests (`test`)
 
-This is the gate: if the Maven test suite fails, no version is cut, no image is built and nothing is deployed.
+The first of three gates: if the Maven test suite fails, no version is cut, no image is built and nothing is deployed. It runs with a read-only token.
 
 1. **Checkout** the commit that was pushed.
 2. **Set up JDK 21** (Eclipse Temurin) with the Maven dependency cache enabled, so `~/.m2` is restored between runs.
@@ -49,9 +55,38 @@ The tests are self-contained: they generate throwaway RSA keys and register thei
 
 ![Testing in the GitHub Actions workflow](assets/images/user-gha-workflow-tests.jpg)
 
+## Job 0b — Security Checks (`security`)
+
+This gate looks for leaked secrets, mishandled keys and known vulnerabilities in the container image. It runs in parallel with the tests, with a read-only token, and builds its own copy of the image to inspect, which is loaded locally and never pushed.
+
+1. **Checkout with full history** (`fetch-depth: 0`), because the secret scan reads every commit.
+2. **Secret scan with gitleaks** — downloads gitleaks 8.30.1, checks the archive against its published SHA-256 before running it, then scans the whole Git history with `--redact` so any finding is masked in the log. A secret removed in a later commit still fails the scan, because it is still in the history. Rules are the gitleaks defaults plus `.gitleaks.toml` in the repo.
+3. **Key and config hygiene** — runs `scripts/security-check.sh`. Without building anything, it fails on tracked key files or `.env`, PEM or base64 private keys in any file, key handling in `.dockerignore` and the `Dockerfile`, the `jwt.*` properties, and hard-coded or defaulted passwords in the properties and compose files.
+4. **Build the image for scanning** — the same build context and GitHub Actions cache as `build-and-push`, so that job later reuses these layers. `pull: true` always fetches the newest base image, so its security fixes are not hidden behind cached layers. The image is tagged `ci-scan:<commit sha>`.
+5. **Check the image for keys** — fails if the image's environment sets `JWT_PRIVATE_KEY_BASE64` or `JWT_PRIVATE_KEY_PATH` to a value. It then exports the image's filesystem and runs `security-check.sh --image-dir` over it, so no key file was copied in. Keys are only ever mounted (Compose, Swarm) or passed at run time (Railway).
+6. **Vulnerability scan with Trivy** — scans the image's OS packages and jars, and fails on any HIGH or CRITICAL CVE that has a fix available (`ignore-unfixed: true`). The action is pinned to the commit of release 0.35.0 rather than a tag: according to the workflow's comment, tags 0.0.1 to 0.34.2 of `aquasecurity/trivy-action` were hijacked in March 2026 (GHSA-69fq-xp46-6x23).
+
+## Job 0c — OWASP Dependency-Check (`dependency-check`)
+
+The third gate checks every Maven dependency against the National Vulnerability Database (NVD). It fails on any dependency with a known vulnerability of CVSS 7.0 or higher, a threshold set in `pom.xml`. It runs in parallel with the other gates, with a read-only token and a 60-minute timeout.
+
+1. **Checkout** and **set up JDK 21** with the Maven cache, as in the test job.
+2. **Choose the vulnerability data source**:
+
+| `NVD_API_KEY` secret | Data source | Freshness |
+| --- | --- | --- |
+| Set | The NVD API | Freshest |
+| Not set | Dependency-Check's own mirror of the NVD data, published on GitHub | Rebuilt daily, best effort; the run log shows a notice |
+
+3. **Restore the vulnerability database** — the database is several hundred MB, so the newest copy is restored from the Actions cache and only the changes since are fetched. A fresh copy is saved after every run, with one cache per data source.
+4. **Run Dependency-Check** — `mvn dependency-check:check`, pointed at the cached data directory.
+5. **Upload the report** — always runs, pass or fail, and attaches the HTML and JSON reports as the `dependency-check-report` artifact.
+
+The first run, or a run after the cache expires, downloads the whole database and can take much longer than later runs.
+
 ## Job 1 — Semantic Release (`release`)
 
-This job decides whether the push is worth a new version, based on the commit messages since the last tag. It runs only after `test` passes.
+This job decides whether the push is worth a new version, based on the commit messages since the last tag. It runs only after all three gates (`test`, `security` and `dependency-check`) pass.
 
 1. **Checkout with full history** (`fetch-depth: 0`). semantic-release needs every commit and tag to work out what changed since the previous release; a shallow clone would make it miscount.
 2. **Set up Node.js** (current LTS), because semantic-release is a Node tool.
@@ -87,7 +122,7 @@ This job builds the image from the repo's `Dockerfile` and pushes it to Docker H
 2. **Set up Docker Buildx**, the builder that supports the GitHub Actions layer cache.
 3. **Log in to Docker Hub** with `DOCKER_USERNAME` and `DOCKER_TOKEN` (use an access token, not the account password).
 4. **Extract metadata** — computes the tag list and OCI labels for the image.
-5. **Build and push** with build context `.` (so the `Dockerfile` must be in the repo root), using `cache-from/cache-to: type=gha` so unchanged Maven dependency layers are reused across runs.
+5. **Build and push** with build context `.` (so the `Dockerfile` must be in the repo root), using `cache-from/cache-to: type=gha`. Most layers come straight from the cache the security job just filled. `pull: true` checks for a newer base image here too.
 6. **Output the image digest** to the log.
 
 Every release pushes the same image under four tags:
@@ -185,7 +220,7 @@ Liveness only says the application is running; it does not check PostgreSQL. A b
 
 ## Required secrets and server setup
 
-Six repository secrets must exist under **Settings → Secrets and variables → Actions**; `GITHUB_TOKEN` is provided automatically.
+Six repository secrets must exist under **Settings → Secrets and variables → Actions**, and a seventh, `NVD_API_KEY`, is optional. `GITHUB_TOKEN` is provided automatically.
 
 | Secret | Used in | What to put in it |
 | --- | --- | --- |
@@ -195,7 +230,8 @@ Six repository secrets must exist under **Settings → Secrets and variables →
 | `SSH_USER` | Deploy | Login user on the manager |
 | `SSH_PRIVATE_KEY` | Deploy | Private key (ed25519) whose public half is in that user's `~/.ssh/authorized_keys` |
 | `SSH_KNOWN_HOSTS` | Deploy | Output of `ssh-keyscan <SSH_HOST>`, verified against the real host key |
-| `GITHUB_TOKEN` | Release | Automatic; permissions come from the workflow's `permissions` block |
+| `NVD_API_KEY` | Dependency-Check | Optional. A free key from the NVD (nvd.nist.gov) for the freshest data; without it the job uses the daily mirror |
+| `GITHUB_TOKEN` | All jobs | Automatic; permissions come from the workflow's `permissions` block, narrowed to read-only in the gate jobs |
 
 On the swarm manager, the SSH user's home directory needs:
 
@@ -205,7 +241,14 @@ On the swarm manager, the SSH user's home directory needs:
 - [ ] Passwordless `sudo` for `docker`, with `-E` allowed so exported variables survive (the job has no terminal to type a password)
 - [ ] Root's Docker client logged in to Docker Hub (`sudo docker login`) if the image repository is private — `--with-registry-auth` forwards those credentials to the workers
 
-In the repo root: `stack-users.yml` (committed) and a `Dockerfile`. Semantic-release also expects a release config (for example `.releaserc`) if you need anything beyond its defaults, such as a branch other than `main`.
+In the repo:
+
+- `stack-users.yml` and a `Dockerfile` in the root.
+- `scripts/security-check.sh`, the key and config checker the security job runs.
+- `.gitleaks.toml`, the extra gitleaks rules and allowlist.
+- The `dependency-check-maven` plugin in `pom.xml`, with the CVSS 7.0 failure threshold.
+
+Semantic-release also expects a release config (for example `.releaserc`) if you need anything beyond its defaults, such as a branch other than `main`.
 
 ## Commit message convention
 
@@ -244,6 +287,12 @@ Most failures show up in one specific job; start from the job that turned red.
 | Symptom | Likely cause | What to do |
 | --- | --- | --- |
 | `test` fails | A failing unit or integration test | Download the `surefire-reports` artifact from the run and read the failing test's report |
+| Secret scan (gitleaks) fails | A secret is in some commit, possibly one deleted later | If it is real: revoke and replace the secret first. Removing it from the files is not enough, because it stays in the history. If it is a false positive (test data, an example value): allowlist it in `.gitleaks.toml` |
+| Secret scan fails at `sha256sum` | `GITLEAKS_VERSION` was changed without updating `GITLEAKS_SHA256` | Copy the checksum for the new version from the gitleaks release page and update both values together |
+| "Key and config hygiene" or "Check the image for keys" fails | A key, `.env` or a hard-coded password is tracked or copied into the image, or the `Dockerfile` sets a `JWT_PRIVATE_KEY_*` variable | Read the script's output for the file or variable; untrack or remove it and fix `.dockerignore` or the `Dockerfile`. A private key that was ever committed must be replaced |
+| Vulnerability scan (Trivy) fails | A HIGH or CRITICAL CVE with a fix exists in the base image or a jar | Update the base image tag or the dependency named in the table. Only if it truly cannot affect this service, list the CVE in a `.trivyignore` file with the reason |
+| Dependency-Check fails | A dependency has a known vulnerability of CVSS 7.0 or higher | Open the `dependency-check-report` artifact, upgrade the dependency (often a newer Spring Boot patch release). Only suppress a false positive, through a suppression file configured in `pom.xml` |
+| Dependency-Check is slow, times out or reports NVD errors | No cached database (first run), or the NVD API rate-limited the job | Re-run once the cache exists; set `NVD_API_KEY`, or remove it to fall back to the mirror if the API itself is the problem |
 | Pipeline stops after `release`, build and deploy show as skipped | No `feat:`/`fix:`/breaking commits since the last tag | Expected; check the "Print Semantic Release Outcome" log. Use a releasable commit type to ship |
 | A `feat:` or `fix:` change was merged but no release was cut | The subject on `main` is not in the convention, often a squash-merge with a free-form PR title or a commit made with `--no-verify` | Check `git log --oneline` on `main`; ship the change with a correctly formatted commit |
 | `git commit` fails with "INVALID COMMIT MESSAGE FORMAT" | The hook rejected the subject | Reword it as `<type>(scope): description` with a lowercase type |
