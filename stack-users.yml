@@ -10,7 +10,7 @@ services:
       POSTGRES_DB: ${DB_NAME_ENV}
       POSTGRES_USER: ${DB_USER_ENV}
       POSTGRES_PASSWORD: ${DB_PASSWORD_ENV}
-    # No "ports:" on purpose: the database is reachable only on the overlay network.
+    # The app reaches the database over the overlay network and does not need a published port.
     volumes:
       - user_db_data:/var/lib/postgresql/data
     healthcheck:
@@ -18,6 +18,8 @@ services:
       interval: 5s
       timeout: 5s
       retries: 5
+    # TEMPORARY, for the assignment demo: direct psql/pgAdmin access to show what the API calls stored.
+    # Allow only your own IP on 5422 in the firewall, and remove this block (and the rule) after the demo.
     ports:
       - target: 5432
         published: 5422
@@ -65,7 +67,9 @@ services:
         target: jwt_private_key
         mode: 0444                     # readable by any container user, so no LOCAL_UID/LOCAL_GID needed
     healthcheck:
-      test: ["CMD-SHELL", "curl -fsS http://localhost:${APP_PORT_ENV}/actuator/health/liveness | grep -q UP || wget -qO- http://localhost:${APP_PORT_ENV}/actuator/health/liveness | grep -q UP"]
+      # BusyBox wget: the image has no curl. 127.0.0.1, not localhost: BusyBox wget does not
+      # fall back to IPv4 when localhost resolves to IPv6 first.
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:${APP_PORT_ENV}/actuator/health/liveness | grep -q UP"]
       interval: 15s
       timeout: 5s
       retries: 3
