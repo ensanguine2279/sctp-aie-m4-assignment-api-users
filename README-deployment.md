@@ -62,9 +62,17 @@ This gate looks for leaked secrets, mishandled keys and known vulnerabilities in
 1. **Checkout with full history** (`fetch-depth: 0`), because the secret scan reads every commit.
 2. **Secret scan with gitleaks** — downloads gitleaks 8.30.1, checks the archive against its published SHA-256 before running it, then scans the whole Git history with `--redact` so any finding is masked in the log. A secret removed in a later commit still fails the scan, because it is still in the history. Rules are the gitleaks defaults plus `.gitleaks.toml` in the repo.
 3. **Key and config hygiene** — runs `scripts/security-check.sh`. Without building anything, it fails on tracked key files or `.env`, PEM or base64 private keys in any file, key handling in `.dockerignore` and the `Dockerfile`, the `jwt.*` properties, and hard-coded or defaulted passwords in the properties and compose files.
+
+![gitleaks and key & config hygiene scans](assets/images/users-gha-workflow-gitleaks-key-cfg-hygiene.jpg)
+
 4. **Build the image for scanning** — the same build context and GitHub Actions cache as `build-and-push`, so that job later reuses these layers. `pull: true` always fetches the newest base image, and `build-args: APK_REFRESH=<run id>` gives the `Dockerfile`'s `ARG APK_REFRESH` a new value on every run, so the `apk upgrade` layer is rebuilt instead of reused from the cache. Without that, an unchanged base image means an old upgrade layer, and Trivy reports CVEs that Alpine has already fixed. The image is tagged `ci-scan:<commit sha>`.
 5. **Check the image for keys** — fails if the image's environment sets `JWT_PRIVATE_KEY_BASE64` or `JWT_PRIVATE_KEY_PATH` to a value. It then exports the image's filesystem and runs `security-check.sh --image-dir` over it, so no key file was copied in. Keys are only ever mounted (Compose, Swarm) or passed at run time (Railway).
+
+![Checking image for keys](assets/images/users-gha-workflow-chk-img-keys.jpg)
+
 6. **Vulnerability scan with Trivy** — scans the image's OS packages and jars, and fails on any HIGH or CRITICAL CVE that has a fix available (`ignore-unfixed: true`). The action is pinned to the commit of release 0.35.0 rather than a tag: according to the workflow's comment, tags 0.0.1 to 0.34.2 of `aquasecurity/trivy-action` were hijacked in March 2026 (GHSA-69fq-xp46-6x23).
+
+![Vulnerability scan using Trivy](assets/images/users-gha-workflow-vulnerability-scan.jpg)
 
 ## Job 0c — OWASP Dependency-Check (`dependency-check`)
 
@@ -77,6 +85,10 @@ The third gate checks every Maven dependency against the National Vulnerability 
 | --- | --- | --- |
 | Set | The NVD API | Freshest |
 | Not set | Dependency-Check's own mirror of the NVD data, published on GitHub | Rebuilt daily, best effort; the run log shows a notice |
+
+![OWASP Dependency Check](assets/images/users-gha-workflow-dep-chk.jpg)
+
+![Dependency check report generated in Artifacts](assets/images/users-gha-workflow-dep-chk-rpt.jpg)
 
 3. **Restore the vulnerability database** — the database is several hundred MB, so the newest copy is restored from the Actions cache and only the changes since are fetched. A fresh copy is saved after every run, with one cache per data source.
 4. **Run Dependency-Check** — `mvn dependency-check:check`, pointed at the cached data directory.
