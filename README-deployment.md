@@ -57,12 +57,12 @@ The tests are self-contained: they generate throwaway RSA keys and register thei
 
 ## Job 0b — Security Checks (`security`)
 
-This gate looks for leaked secrets, mishandled keys and known vulnerabilities in the container image. It runs in parallel with the tests, with a read-only token, and builds its own copy of the image to inspect, which is loaded locally and never pushed.
+This gate looks for leaked secrets, mishandled keys and known vulnerabilities in the container image. [`README-security-checks.md`](README-security-checks.md) covers each check in detail, how to run them locally, and what they found. It runs in parallel with the tests, with a read-only token, and builds its own copy of the image to inspect, which is loaded locally and never pushed.
 
 1. **Checkout with full history** (`fetch-depth: 0`), because the secret scan reads every commit.
 2. **Secret scan with gitleaks** — downloads gitleaks 8.30.1, checks the archive against its published SHA-256 before running it, then scans the whole Git history with `--redact` so any finding is masked in the log. A secret removed in a later commit still fails the scan, because it is still in the history. Rules are the gitleaks defaults plus `.gitleaks.toml` in the repo.
 3. **Key and config hygiene** — runs `scripts/security-check.sh`. Without building anything, it fails on tracked key files or `.env`, PEM or base64 private keys in any file, key handling in `.dockerignore` and the `Dockerfile`, the `jwt.*` properties, and hard-coded or defaulted passwords in the properties and compose files.
-4. **Build the image for scanning** — the same build context and GitHub Actions cache as `build-and-push`, so that job later reuses these layers. `pull: true` always fetches the newest base image, so its security fixes are not hidden behind cached layers. The image is tagged `ci-scan:<commit sha>`.
+4. **Build the image for scanning** — the same build context and GitHub Actions cache as `build-and-push`, so that job later reuses these layers. `pull: true` always fetches the newest base image, and `build-args: APK_REFRESH=<run id>` gives the `Dockerfile`'s `ARG APK_REFRESH` a new value on every run, so the `apk upgrade` layer is rebuilt instead of reused from the cache. Without that, an unchanged base image means an old upgrade layer, and Trivy reports CVEs that Alpine has already fixed. The image is tagged `ci-scan:<commit sha>`.
 5. **Check the image for keys** — fails if the image's environment sets `JWT_PRIVATE_KEY_BASE64` or `JWT_PRIVATE_KEY_PATH` to a value. It then exports the image's filesystem and runs `security-check.sh --image-dir` over it, so no key file was copied in. Keys are only ever mounted (Compose, Swarm) or passed at run time (Railway).
 6. **Vulnerability scan with Trivy** — scans the image's OS packages and jars, and fails on any HIGH or CRITICAL CVE that has a fix available (`ignore-unfixed: true`). The action is pinned to the commit of release 0.35.0 rather than a tag: according to the workflow's comment, tags 0.0.1 to 0.34.2 of `aquasecurity/trivy-action` were hijacked in March 2026 (GHSA-69fq-xp46-6x23).
 
@@ -122,7 +122,7 @@ This job builds the image from the repo's `Dockerfile` and pushes it to Docker H
 2. **Set up Docker Buildx**, the builder that supports the GitHub Actions layer cache.
 3. **Log in to Docker Hub** with `DOCKER_USERNAME` and `DOCKER_TOKEN` (use an access token, not the account password).
 4. **Extract metadata** — computes the tag list and OCI labels for the image.
-5. **Build and push** with build context `.` (so the `Dockerfile` must be in the repo root), using `cache-from/cache-to: type=gha`. Most layers come straight from the cache the security job just filled. `pull: true` checks for a newer base image here too.
+5. **Build and push** with build context `.` (so the `Dockerfile` must be in the repo root), using `cache-from/cache-to: type=gha`. Most layers come straight from the cache the security job just filled. `pull: true` checks for a newer base image here too, and the build passes the same `APK_REFRESH` value as the security job in this run, so the pushed image reuses the exact upgrade layer that Trivy scanned.
 6. **Output the image digest** to the log.
 
 Every release pushes the same image under four tags:
@@ -175,11 +175,11 @@ The image line in `stack-users.yml` is `ensanguine/user-service:${IMAGE_TAG:-lat
 
 The rollout is gated on Spring Boot Actuator's liveness probe: Swarm moves on to the next replica only once the new container reports `UP`, and rolls the whole update back if it never does.
 
-The healthcheck in `stack-users.yml`:
+The healthcheck in `stack-users.yml` (it overrides any `HEALTHCHECK` in the `Dockerfile`):
 
 ```yaml
 healthcheck:
-  test: ["CMD-SHELL", "curl -fsS http://localhost:${APP_PORT_ENV}/actuator/health/liveness | grep -q UP || wget -qO- http://localhost:${APP_PORT_ENV}/actuator/health/liveness | grep -q UP"]
+  test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:${APP_PORT_ENV}/actuator/health/liveness | grep -q UP"]
   interval: 15s
   timeout: 5s
   retries: 3
@@ -190,7 +190,7 @@ healthcheck:
 | --- | --- | --- |
 | `start_period` | 90s | Failed checks during the first 90 seconds don't count, so a slow Spring startup isn't mistaken for a failure |
 | `interval`, `timeout`, `retries` | 15s, 5s, 3 | After the grace period, three failed checks in a row (about 45 seconds) mark the container unhealthy |
-| Command | `curl`, falling back to `wget` | The check works whether the image ships `curl` or `wget`. With neither, every check fails |
+| Command | BusyBox `wget` on `127.0.0.1` | The runtime image has no `curl` (it was removed to cut CVEs), and `wget` is built into Alpine. `127.0.0.1` rather than `localhost`, because BusyBox `wget` does not fall back to IPv4 when `localhost` resolves to IPv6 first |
 
 The service's `update_config` decides what Swarm does with that signal:
 
@@ -245,7 +245,8 @@ In the repo:
 
 - `stack-users.yml` and a `Dockerfile` in the root.
 - `scripts/security-check.sh`, the key and config checker the security job runs.
-- `.gitleaks.toml`, the extra gitleaks rules and allowlist.
+- `.gitleaks.toml`, the extra gitleaks rules and allowlist, and `.gitleaksignore`, the reviewed findings in old commits (one fingerprint per line, with the reason).
+- `dependency-check-suppressions.xml`, the reviewed Dependency-Check false positives, each with a reason and an expiry date.
 - The `dependency-check-maven` plugin in `pom.xml`, with the CVSS 7.0 failure threshold.
 
 Semantic-release also expects a release config (for example `.releaserc`) if you need anything beyond its defaults, such as a branch other than `main`.
@@ -287,11 +288,11 @@ Most failures show up in one specific job; start from the job that turned red.
 | Symptom | Likely cause | What to do |
 | --- | --- | --- |
 | `test` fails | A failing unit or integration test | Download the `surefire-reports` artifact from the run and read the failing test's report |
-| Secret scan (gitleaks) fails | A secret is in some commit, possibly one deleted later | If it is real: revoke and replace the secret first. Removing it from the files is not enough, because it stays in the history. If it is a false positive (test data, an example value): allowlist it in `.gitleaks.toml` |
+| Secret scan (gitleaks) fails | A secret is in some commit, possibly one deleted later | If it is real: revoke and replace the secret first. Removing it from the files is not enough, because it stays in the history. If it is reviewed and not live (a retired secret, an expired example token, test data in an old commit): add its fingerprint to `.gitleaksignore` with a comment saying why. If it is a pattern that is never a secret: allowlist it narrowly in `.gitleaks.toml` |
 | Secret scan fails at `sha256sum` | `GITLEAKS_VERSION` was changed without updating `GITLEAKS_SHA256` | Copy the checksum for the new version from the gitleaks release page and update both values together |
 | "Key and config hygiene" or "Check the image for keys" fails | A key, `.env` or a hard-coded password is tracked or copied into the image, or the `Dockerfile` sets a `JWT_PRIVATE_KEY_*` variable | Read the script's output for the file or variable; untrack or remove it and fix `.dockerignore` or the `Dockerfile`. A private key that was ever committed must be replaced |
-| Vulnerability scan (Trivy) fails | A HIGH or CRITICAL CVE with a fix exists in the base image or a jar | Update the base image tag or the dependency named in the table. Only if it truly cannot affect this service, list the CVE in a `.trivyignore` file with the reason |
-| Dependency-Check fails | A dependency has a known vulnerability of CVSS 7.0 or higher | Open the `dependency-check-report` artifact, upgrade the dependency (often a newer Spring Boot patch release). Only suppress a false positive, through a suppression file configured in `pom.xml` |
+| Vulnerability scan (Trivy) fails | A HIGH or CRITICAL CVE with a fix exists in the base image or a jar | For an Alpine package, the fix is usually already in Alpine: re-run, since the `apk upgrade` layer is rebuilt every run. If it persists, check that the `Dockerfile` still has `ARG APK_REFRESH` and `RUN apk upgrade --no-cache` in the runtime stage. For a jar, upgrade the dependency (often the Spring Boot parent). Don't add packages to the runtime image. Only if it truly cannot affect this service, list the CVE in a `.trivyignore` file with the reason |
+| Dependency-Check fails | A dependency has a known vulnerability of CVSS 7.0 or higher | Open the `dependency-check-report` artifact, upgrade the dependency (often a newer Spring Boot patch release). Only suppress a false positive, in `dependency-check-suppressions.xml`, with a reason and an expiry date |
 | Dependency-Check is slow, times out or reports NVD errors | No cached database (first run), or the NVD API rate-limited the job | Re-run once the cache exists; set `NVD_API_KEY`, or remove it to fall back to the mirror if the API itself is the problem |
 | Pipeline stops after `release`, build and deploy show as skipped | No `feat:`/`fix:`/breaking commits since the last tag | Expected; check the "Print Semantic Release Outcome" log. Use a releasable commit type to ship |
 | A `feat:` or `fix:` change was merged but no release was cut | The subject on `main` is not in the convention, often a squash-merge with a free-form PR title or a commit made with `--no-verify` | Check `git log --oneline` on `main`; ship the change with a correctly formatted commit |
@@ -301,7 +302,7 @@ Most failures show up in one specific job; start from the job that turned red.
 | `deploy` fails at `scp` or `ssh` with host key or permission errors | Bad `SSH_KNOWN_HOSTS`, wrong key, or key not in `authorized_keys` | Re-run `ssh-keyscan`, confirm the key pair matches, test the login by hand |
 | `deploy` fails with `users.env: No such file or directory` | Env file missing from the SSH user's home | Create it on the manager (never commit it) |
 | `deploy` reports `rollback_started` or `rollback_completed` | A new container crashed or never passed the liveness check | Read the task history in the log, then `sudo docker service logs users_user-service` on the manager. The previous version is still serving |
-| Every deploy rolls back, even for small changes | The liveness check itself fails: probes not enabled (404), the path not permitted in `SecurityConfig` (401), or neither `curl` nor `wget` in the image | Run the check inside a running container: `sudo docker exec <container> curl -fsS localhost:<port>/actuator/health/liveness` |
+| Every deploy rolls back, even for small changes | The liveness check itself fails: probes not enabled (404), the path not permitted in `SecurityConfig` (401), the check calling `curl` (not in the image) or `localhost` (IPv6 first) | Run the check inside a running container: `sudo docker exec <container> wget -qO- http://127.0.0.1:<port>/actuator/health/liveness` |
 | `deploy` fails with `only updates to Labels are allowed` on `jwt_private_key` | The key file changed, but Swarm secrets cannot be changed in place | Rename the secret in the stack file (e.g. `jwt_private_key_v2`) and keep the same `target` path |
 | `deploy` times out after 10 minutes | Slow pulls, too few nodes for the update policy, or a hanging health check | Check `docker service ps` on the manager; fix the cause and re-run the job |
 | Deploy succeeds but the old version is still running | Stack file hard-codes the image tag instead of `${IMAGE_TAG}` | Change the image line to use `${IMAGE_TAG}` |
@@ -309,3 +310,10 @@ Most failures show up in one specific job; start from the job that turned red.
 **Re-running a deploy.** Use "Re-run failed jobs" on the workflow run. The version and digest outputs from the earlier jobs are reused, so the same image is rolled out again without cutting a new release.
 
 **Rolling back.** A release that fails its healthcheck is rolled back automatically, because the stack file sets `failure_action: rollback`. A release that is healthy but wrong is not. To roll that back by hand, run `sudo docker service rollback users_user-service` on the manager, or revert the bad commit with a `fix:` message so the pipeline ships a new patch release.
+## Related documents
+
+- [`README.md`](README.md): what the service does, and how to run it
+- [`README-security-checks.md`](README-security-checks.md): the three check jobs, how to run them locally, and their findings
+- [`README-authentication.md`](README-authentication.md): token issuing and validation
+- [`README-Dockerfile.md`](README-Dockerfile.md): the image build
+- [`README-docker-compose.md`](README-docker-compose.md): running the stack locally
