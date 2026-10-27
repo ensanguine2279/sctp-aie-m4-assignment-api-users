@@ -351,3 +351,7 @@ Click [here](README-docker-compose.md) for walkthrough on the `docker-compose.ym
 ## Deployment Workflow
 
 Click [here](README-deployment.md) for details on the GitHub Actions workflow.
+
+## Security Checks
+
+Click [here](README-security-checks.md) for details on the security checks done when deploying.
