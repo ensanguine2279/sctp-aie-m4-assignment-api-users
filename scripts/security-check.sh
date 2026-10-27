@@ -8,6 +8,11 @@
 #   4. a .dockerignore that would let *.pem or .env into the image build context
 #   5. a Dockerfile that copies a key in or bakes JWT_PRIVATE_KEY_* into the image
 #   6. a default value for jwt.private-key-path, or a leftover HS256 jwt.secret property
+#   7. a password, secret or token written into the Spring properties or a compose/stack file,
+#      including as a ${VAR:default} fallback
+#
+# General secrets (API tokens, cloud keys, anything else, across the whole git history) are covered by
+# gitleaks in CI. This script covers what gitleaks misses: weak default passwords and key handling.
 #
 # Run from the project root:  ./scripts/security-check.sh
 # Optional: ./scripts/security-check.sh --image-dir <dir>  also scans an exported image filesystem for keys.
@@ -107,6 +112,27 @@ if [[ -n "$props" ]]; then
     fail "an HS256 jwt.secret property is still present (lines above); the service signs with RS256 only"
   else
     pass "no HS256 jwt.secret property"
+  fi
+  # 7a. No password, secret, token or API key written into the properties, not even as a ${VAR:default}.
+  # spring.datasource.password=${DB_PASSWORD} is fine; ${DB_PASSWORD:password} or password=secret is not.
+  # shellcheck disable=SC2086
+  if grep -nEi '^\s*[a-z0-9._-]*(password|secret|token|api-?key)[a-z0-9._-]*\s*[=:]\s*(\$\{[A-Za-z0-9_.]+:[^}]+\}|[^$[:space:]{].*)\s*$' $props; then
+    fail "a password, secret or token has a value or default in the Spring properties (lines above); read it from the environment with no default"
+  else
+    pass "no passwords, secrets or tokens in the Spring properties"
+  fi
+fi
+
+# 7b. Compose and stack files: no literal passwords, secrets or tokens, and no ${VAR:-default} for them.
+# ${DB_PASSWORD_ENV}, ${DB_PASSWORD_ENV:?msg} and *_FILE pointing at /run/secrets are fine.
+compose_files=$(git ls-files | grep -E '(^|/)(docker-compose|compose|stack-)[^/]*\.ya?ml$' || true)
+if [[ -n "$compose_files" ]]; then
+  # shellcheck disable=SC2086
+  if grep -nE '^\s*-?\s*[A-Z0-9_]*(PASSWORD|SECRET|TOKEN)[A-Z0-9_]*\s*[:=]\s*("?\$\{[A-Z0-9_]+:?-[^}]+\}"?|[^$[:space:]"].*|"[^$].*)\s*$' $compose_files \
+      | grep -vE '_FILE\s*[:=]'; then
+    fail "a password, secret or token is written into a compose or stack file (lines above); pass it through .env or a secret"
+  else
+    pass "no passwords, secrets or tokens in compose or stack files"
   fi
 fi
 

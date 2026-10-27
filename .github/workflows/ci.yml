@@ -63,11 +63,30 @@ jobs:
       SCAN_IMAGE: ci-scan:${{ github.sha }}
 
     steps:
-      - name: Checkout repository
+      - name: Checkout repository (full history, for the secret scan)
         uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      # Passwords, tokens, API keys and private keys in every commit, including ones deleted later
+      # (a secret removed in a later commit is still in the history). Rules: gitleaks defaults plus .gitleaks.toml.
+      # The binary is checked against its published SHA-256 before it runs.
+      - name: Secret scan (gitleaks, full history)
+        env:
+          GITLEAKS_VERSION: 8.30.1
+          GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+        run: |
+          cd "$RUNNER_TEMP"
+          curl -sSLf -o gitleaks.tar.gz \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          echo "${GITLEAKS_SHA256}  gitleaks.tar.gz" | sha256sum -c -
+          tar -xzf gitleaks.tar.gz gitleaks
+          cd "$GITHUB_WORKSPACE"
+          "$RUNNER_TEMP/gitleaks" git --redact --verbose --no-banner .
 
       # Fast, no build: tracked keys or .env, PEM or base64 private keys in any file,
-      # .dockerignore and Dockerfile key handling, and the jwt.* properties.
+      # .dockerignore and Dockerfile key handling, the jwt.* properties, and
+      # hard-coded or defaulted passwords in the properties and compose files.
       - name: Key and config hygiene
         run: |
           chmod +x scripts/security-check.sh
@@ -115,10 +134,77 @@ jobs:
           exit-code: '1'
           format: table
 
+  # JOB 0c: OWASP Dependency-Check, in parallel with the tests. Fails on any dependency with a
+  # known vulnerability of CVSS 7.0 or higher (configured in pom.xml). The HTML report is kept either way.
+  dependency-check:
+    name: OWASP Dependency-Check
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    env:
+      # Optional. Empty when the secret is not set, and then the mirror is used (next steps).
+      NVD_API_KEY: ${{ secrets.NVD_API_KEY }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+
+      # Where the vulnerability data comes from:
+      #   - NVD API, when the NVD_API_KEY secret is set (freshest data);
+      #   - otherwise Dependency-Check's own mirror of the NVD data, rebuilt daily from the NVD API
+      #     and published on GitHub. No key needed, data at most about a day old (best effort).
+      - name: Choose the vulnerability data source
+        id: source
+        run: |
+          if [ -n "$NVD_API_KEY" ]; then
+            echo "name=nvd-api" >> "$GITHUB_OUTPUT"
+            echo "args=" >> "$GITHUB_OUTPUT"
+            echo "Using the NVD API with the NVD_API_KEY secret."
+          else
+            echo "name=mirror" >> "$GITHUB_OUTPUT"
+            echo "args=-DnvdDatafeedUrl=https://dependency-check.github.io/DependencyCheck_Builder/nvd_cache/nvdcve-{0}.json.gz" >> "$GITHUB_OUTPUT"
+            echo "::notice::No NVD_API_KEY secret: using the Dependency-Check NVD mirror (updated daily)."
+          fi
+
+      # The vulnerability database is several hundred MB. Restore the newest copy and only fetch
+      # what changed since; a fresh copy is saved after every run. One cache per data source.
+      - name: Restore the vulnerability database
+        uses: actions/cache@v6
+        with:
+          path: ~/.dependency-check-data
+          key: dependency-check-data-${{ runner.os }}-${{ steps.source.outputs.name }}-${{ github.run_id }}
+          restore-keys: dependency-check-data-${{ runner.os }}-${{ steps.source.outputs.name }}-
+
+      - name: Run Dependency-Check
+        env:
+          SOURCE_ARGS: ${{ steps.source.outputs.args }}
+        run: |
+          # SOURCE_ARGS is empty or a single argument, so it is passed unquoted on purpose.
+          # shellcheck disable=SC2086
+          mvn -B -ntp dependency-check:check -DdataDirectory="$HOME/.dependency-check-data" $SOURCE_ARGS
+
+      - name: Upload the report
+        if: always()
+        uses: actions/upload-artifact@v5
+        with:
+          name: dependency-check-report
+          path: |
+            target/dependency-check-report.html
+            target/dependency-check-report.json
+          if-no-files-found: ignore
+
   # JOB 1: Calculate version and create Git Tag + GitHub Release
   release:
     name: Semantic Release
-    needs: [test, security]
+    needs: [test, security, dependency-check]
     runs-on: ubuntu-latest
     outputs:
       new_release_published: ${{ steps.semantic.outputs.new_release_published }}

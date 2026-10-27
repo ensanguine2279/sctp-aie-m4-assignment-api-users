@@ -152,6 +152,52 @@
 					</execution>
 				</executions>
 			</plugin>
+
+			<!--
+			This is not bound to a phase, so `mvn verify` stays fast. Run it on demand, either without a key
+			(Dependency-Check's daily mirror of the NVD data):
+				mvn dependency-check:check \
+					-DnvdDatafeedUrl='https://dependency-check.github.io/DependencyCheck_Builder/nvd_cache/nvdcve-{0}.json.gz'
+			or with an NVD API key (free from https://nvd.nist.gov/developers/request-an-api-key):
+				export NVD_API_KEY=...
+				mvn dependency-check:check
+			The report is written to target/dependency-check-report.html.
+			-->
+			<plugin>
+				<groupId>org.owasp</groupId>
+				<artifactId>dependency-check-maven</artifactId>
+				<version>13.0.0</version>
+				<configuration>
+					<!-- The key is read from this environment variable, so it is never written into the pom
+						and does not show up in Maven debug logs. -->
+					<nvdApiKeyEnvironmentVariable>NVD_API_KEY</nvdApiKeyEnvironmentVariable>
+
+					<!-- Fail on any HIGH or CRITICAL finding (CVSS 7.0 and above). -->
+					<failBuildOnCVSS>7</failBuildOnCVSS>
+
+					<formats>
+						<format>HTML</format>
+						<format>JSON</format>
+					</formats>
+
+					<suppressionFiles>
+						<suppressionFile>${project.basedir}/dependency-check-suppressions.xml</suppressionFile>
+					</suppressionFiles>
+
+					<!-- Test-scope libraries (JUnit, H2, Mockito) never reach the running service. This is the default,
+						written out so the choice is visible. -->
+					<skipTestScope>true</skipTestScope>
+
+					<!-- Sonatype OSS Index now needs an account and API token. The NVD data is enough here. -->
+					<ossIndexAnalyzerEnabled>false</ossIndexAnalyzerEnabled>
+
+					<!-- This is a Java-only service: no .NET assemblies, no npm, no bundled JavaScript. -->
+					<assemblyAnalyzerEnabled>false</assemblyAnalyzerEnabled>
+					<nodeAnalyzerEnabled>false</nodeAnalyzerEnabled>
+					<nodeAuditAnalyzerEnabled>false</nodeAuditAnalyzerEnabled>
+					<retireJsAnalyzerEnabled>false</retireJsAnalyzerEnabled>
+				</configuration>
+			</plugin>
 		</plugins>
 	</build>
 

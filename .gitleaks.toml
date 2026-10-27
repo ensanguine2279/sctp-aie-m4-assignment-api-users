@@ -1,0 +1,12 @@
+# gitleaks configuration: the default rules, plus one narrow exception.
+# gitleaks reads this file automatically when it runs from the project root.
+
+[extend]
+useDefault = true
+
+# security-check.sh contains the PEM private key header as a search pattern, not as a key.
+# Only the private-key rule is switched off for that one file; every other rule still applies to it.
+[[allowlists]]
+description = "Search patterns in the key-leak check script"
+targetRules = ["private-key"]
+paths = ['''^scripts/security-check\.sh$''']

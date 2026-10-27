@@ -1,0 +1,30 @@
+# gitleaks findings reviewed and accepted (users service). One fingerprint per line; # starts a comment.
+# Reviewed 2026-10-27. Each entry is tied to the commit it was found in, so the same value in a NEW commit
+# is still reported. Do not add an entry for a secret that is still in use: rotate it first.
+
+# Old HS256 signing secret (jwt.secret / JWT_SECRET). Dead since the switch to RS256: both services
+# reject HS256 tokens, so it cannot sign anything they accept. Not used in any deployment.
+2d132cf477a1bb5bb22267f4b5d0a7447e61fa64:run-container.sh:generic-api-key:10
+2d132cf477a1bb5bb22267f4b5d0a7447e61fa64:README-Dockerfile.md:generic-api-key:129
+2d132cf477a1bb5bb22267f4b5d0a7447e61fa64:src/test/resources/application.properties:generic-api-key:6
+2d132cf477a1bb5bb22267f4b5d0a7447e61fa64:src/main/resources/application.properties:generic-api-key:27
+2d132cf477a1bb5bb22267f4b5d0a7447e61fa64:src/test/java/sg/edu/ntu/taskflow_api/users/security/JwtServiceTest.java:generic-api-key:33
+
+# Example JWTs in the README's sample login responses. Expired one hour after issue, signed with the
+# dead HS256 secret above.
+2d132cf477a1bb5bb22267f4b5d0a7447e61fa64:README.md:generic-api-key:137
+87d5aad0c1a0cbc12db36bb87956b71508e3666c:README.md:generic-api-key:162
+0c0a1242399630d3a7384bea27edde0d46924153:README.md:generic-api-key:162
+0b340fa7545bb92935339f310b4af36322669c56:README.md:generic-api-key:162
+
+# Not keys: code that strips the PEM header, and documentation that names the PKCS#1 header.
+c91358ac4ebd419b643205dfc7f0e5a2fabde686:src/main/java/sg/edu/ntu/taskflow_api/users/security/JwtService.java:private-key:87
+0b340fa7545bb92935339f310b4af36322669c56:src/main/java/sg/edu/ntu/taskflow_api/users/security/JwtService.java:private-key:96
+87d5aad0c1a0cbc12db36bb87956b71508e3666c:authentication.md:private-key:80
+286ea6a768bc10c6ee7bf98c4d97a863142f8aaa:README-authentication.md:private-key:80
+0c0a1242399630d3a7384bea27edde0d46924153:README-authentication.md:private-key:81
+0b340fa7545bb92935339f310b4af36322669c56:README-authentication.md:private-key:81
+
+# Test-only PEM string in JwtServiceWiringTest, never used to sign real tokens.
+c91358ac4ebd419b643205dfc7f0e5a2fabde686:src/test/java/sg/edu/ntu/taskflow_api/users/security/JwtServiceWiringTest.java:private-key:37
+0b340fa7545bb92935339f310b4af36322669c56:src/test/java/sg/edu/ntu/taskflow_api/users/security/JwtServiceWiringTest.java:private-key:37

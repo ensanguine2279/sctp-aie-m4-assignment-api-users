@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  OWASP Dependency-Check suppressions for the TaskFlow users service.
+
+  Empty on purpose. Add an entry only for a finding you have checked and judged a false positive
+  (or not exploitable here), and always give it a reason and an expiry date, so it is reviewed again.
+  The HTML report has a "suppress" button on each finding that generates the XML for you.
+
+  Example:
+  <suppress until="2027-01-31Z">
+     <notes><![CDATA[
+     False positive: CVE-XXXX-YYYY affects the C library "foo", not the Java artifact foo-java.
+     ]]></notes>
+     <packageUrl regex="true">^pkg:maven/com\.example/foo-java@.*$</packageUrl>
+     <cve>CVE-XXXX-YYYY</cve>
+  </suppress>
+-->
+<suppressions xmlns="https://jeremylong.github.io/DependencyCheck/dependency-suppression.1.4.xsd"
+              xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+              xsi:schemaLocation="https://jeremylong.github.io/DependencyCheck/dependency-suppression.1.4.xsd
+                                  https://dependency-check.github.io/DependencyCheck/dependency-suppression.1.4.xsd">
+</suppressions>
